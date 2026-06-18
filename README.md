@@ -1,5 +1,7 @@
 # Qiyida X99 D4 (C612) - BIOS Update
-
+<p align="center">
+  <img src="qiyda-x99-d4-1.jpg" width="600">
+</p>
 Este repositorio contiene una versión actualizada y segura del firmware para la placa base china **Qiyida X99 D4 (Chipset C612 / X99)(10 PINS TPM VERSION)**. 
 
 El objetivo de este proyecto es proveer una base de firmware 100% estable, utilizando los módulos originales de fábrica pero inyectando los últimos parches de seguridad de Intel (microcodigos).
@@ -25,7 +27,7 @@ Se han reemplazado los microcódigos obsoletos de fábrica (2015-2019) por las v
 - MMIO Stale Data
 - **Downfall (GDS) y RFDS** (Crítico para instrucciones AVX2/AVX-512 en plataformas X99).
 
-### 3. Herramientas Utilizadas
+### 2. Herramientas Utilizadas
 Para garantizar que la estructura de la BIOS y los checksums (FIT - Firmware Interface Table) permanezcan intactos y funcionales, las modificaciones se hicieron mediante las herramientas oficiales de fabricantes:
 - **MMTool Aptio 5.0.2.0024** (Para inyección segura de microcódigos y recálculo de la tabla FIT).
 - **MCExtractor v1.104.0** (Para la verificación criptográfica y hexadecimal de los microcódigos instalados).
