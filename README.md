@@ -1,4 +1,3 @@
-# Qiyida X99 D4 (C612) - BIOS Update
 # Qiyida X99 D4 (C612) - BIOS Update & Mods
 <p align="center">
   <img src="qiyda-x99-d4-1.jpg" width="600">
