@@ -37,13 +37,15 @@ Se construyó un mod experimental de alto nivel ("Cross-Flash") tomando como bas
 - **Trasplante del Flash Descriptor:** Se inyectó el descriptor original de la Qiyida para mantener las configuraciones eléctricas del PCH C612 (straps) intactas.
 - **Inyección de DSDT (ACPI):** Mapeo correcto de pistas PCIe y puertos USB de la Qiyida hacia el núcleo lógico de Gigabyte.
 - **Inyección SioDxeInit (Nuvoton NCT6779D):** Reemplazo del driver Super I/O nativo de Gigabyte (ITE) por el de Qiyida para evitar cuelgues en el POST y mantener la lectura de sensores térmicos y RPM de ventiladores.
-- **Inyección LAN Realtek:** Sustitución del módulo de configuración Intel GbE por el driver UNDI Realtek nativo de la placa base.
+- **Inyección LAN Realtek (Sin Conflictos):** Sustitución del driver UNDI Realtek nativo para garantizar red funcional.
+- **Neutralización de Telemetría VRM (AMIBCP):** Se forzaron los valores de `PWM Phase Control` y `CPU VRIN PWM Thermal Protection` a modo Normal/Disabled (`0`). Esto evita que el BIOS de Gigabyte exija lecturas térmicas digitales al VRM analógico de la Qiyida, previniendo *thermal throttling* fantasma y cuelgues.
 
 ### 3. Herramientas Utilizadas
 Para garantizar que la estructura de la BIOS permanezca funcional, las modificaciones se hicieron mediante herramientas profesionales de análisis estructural:
 - **MMTool Aptio 5.0.2.0024:** Para inyección segura de microcódigos y recálculo de la tabla FIT.
 - **MCExtractor v1.104.0:** Para la verificación criptográfica y hexadecimal de los microcódigos.
 - **UEFITool 0.28.0:** Para extracción, análisis y trasplante de volúmenes DXE (DSDT, SIO, LAN) sin corromper los *padding files* de la arquitectura Aptio V.
+- **AMIBCP 5.0.2:** Para la modificación interna de los menús M.I.T. de Gigabyte y el forzado de perfiles de energía seguros (Failsafe) en el control del VRM.
 
 ---
 
