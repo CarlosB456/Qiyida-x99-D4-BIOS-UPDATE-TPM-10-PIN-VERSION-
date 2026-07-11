@@ -9,6 +9,7 @@ El objetivo de este proyecto es doble: proveer una base de firmware 100% estable
 
 ## ⚠️ ESTADO DEL PROYECTO: NO TESTEADO (BETA)
 **De momento, NO se han podido testear en hardware ni la BIOS con microcódigos actualizados ni la versión de interfaz gráfica (`qiyidax99d4interfazgraficamodbeta.rom`) ya que no contamos temporalmente con un grabador físico CH341A.**
+<img width="1024" height="768" alt="image" src="https://github.com/user-attachments/assets/a6568fbe-67cd-4825-9472-f34536452b4a" />
 
 Flasear una BIOS siempre conlleva riesgos. **No uses AFUDOS/AFUWIN**. Se recomienda encarecidamente esperar a pruebas de validación o flashear bajo tu propio riesgo SOLO si tienes a mano un programador CH341A como método de recuperación en caso de fallo (Brick).
 
