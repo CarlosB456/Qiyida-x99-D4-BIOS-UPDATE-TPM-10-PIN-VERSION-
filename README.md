@@ -9,7 +9,6 @@ El objetivo de este proyecto es doble: proveer una base de firmware 100% estable
 
 ## ⚠️ ESTADO DEL PROYECTO: NO TESTEADO (BETA)
 **De momento, NO se han podido testear en hardware ni la BIOS con microcódigos actualizados ni la versión de interfaz gráfica (`qiyidax99d4interfazgraficamodbeta.rom`) ya que no contamos temporalmente con un grabador físico CH341A.**
-<img width="1024" height="768" alt="image" src="https://github.com/user-attachments/assets/a6568fbe-67cd-4825-9472-f34536452b4a" />
 
 Flasear una BIOS siempre conlleva riesgos. **No uses AFUDOS/AFUWIN**. Se recomienda encarecidamente esperar a pruebas de validación o flashear bajo tu propio riesgo SOLO si tienes a mano un programador CH341A como método de recuperación en caso de fallo (Brick).
 
@@ -33,6 +32,7 @@ Se han reemplazado los microcódigos obsoletos de fábrica (2015-2019) por las v
 
 ### 2. Mod de Interfaz Gráfica Gigabyte (EXPERIMENTAL) - `qiyidax99d4interfazgraficamodbeta.rom`
 Se construyó un mod experimental de alto nivel ("Cross-Flash") tomando como base la BIOS UEFI de una placa **Gigabyte X99 Ultra Gaming (F7c)** para portar su interfaz gráfica avanzada y menús de Overclocking a la placa Qiyida.
+<img width="1024" height="768" alt="image" src="https://github.com/user-attachments/assets/34841377-7edf-47af-9725-d4fb70468f07" />
 
 **Técnicas de ingeniería aplicadas en esta versión:**
 - **Trasplante del Flash Descriptor:** Se inyectó el descriptor original de la Qiyida para mantener las configuraciones eléctricas del PCH C612 (straps) intactas.
