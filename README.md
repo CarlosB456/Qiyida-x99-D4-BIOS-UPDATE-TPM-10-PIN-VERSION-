@@ -29,19 +29,18 @@ Repositorio de firmware oficial y modificado para la placa base Qiyida X99-D4 (R
 
 | Archivo | Tamano | SHA-256 | Descripcion |
 | :--- | :--- | :--- | :--- |
-| `qiyidax99d4interfazgrafica_reparada.rom` | 16,777,216 bytes | `f208445b5cfd55b8d171e288f237baae45fc2286d5844f386bbf5c46205a16d3` | Firmware completo de 16 MB con interfaz grafica UEFI de Gigabyte, mitigacion AltMeDisable, microcodigos 2024, Super I/O Nuvoton y LAN Realtek. |
+| `qiyidax99d4interfazgraficamodbeta.rom` | 16,777,216 bytes | `f208445b5cfd55b8d171e288f237baae45fc2286d5844f386bbf5c46205a16d3` | Firmware completo de 16 MB con interfaz grafica UEFI de Gigabyte reparada, mitigacion AltMeDisable, microcodigos 2024, Super I/O Nuvoton y LAN Realtek. |
 | `qiyidax99d4BiosUpdate.rom` | 16,777,216 bytes | `0bca95f4869ecdbbeac3d4d528b34063697dea17473a2a0adf2162ed77284b45` | Firmware de produccion basado en la BIOS original con microcodigos 2024 (Haswell rev 49, Broadwell rev 41). Flasheable por software con `fptw64 -bios`. |
 | `qiyidax99d4ORIGINAL.rom` | 16,777,216 bytes | `0220fc2e42061ebde1634f231a52951631fc64e015770ba5fdd140e00b5e32d1` | Volcado de fabrica integro (Intel SPS 3.1.3.72, BIOS 8 MB). |
-| `X99UG.F7c` | 16,777,216 bytes | `90818dd14d621360badea1463f975a367952e2a0d43e7dc73401a7ab0a2d3a1f` | Firmware donante original de Gigabyte GA-X99-Ultra Gaming (F7c). |
 
 ---
 
 ## 3. Ingenieria Inversa y Reparaciones Estructurales Realizadas
 
-La version preliminar experimental (`qiyidax99d4interfazgraficamodbeta.rom`) sufria de bloqueos criticos que impedian el arranque en placas reales. En `qiyidax99d4interfazgrafica_reparada.rom` se corrigieron los siguientes defectos de bajo nivel:
+En `qiyidax99d4interfazgraficamodbeta.rom` se corrigieron integralmente los defectos de bajo nivel que existian en versiones experimentales previas:
 
 ### 3.1 Reparacion del Vector de Arranque Multiprocesador (Offset `0x00FFD000`)
-En el mod beta, la herramienta de reconstruccion relleno con bytes planos `0xFF` el area de padding en `0x00FFD000`, borrando el anclaje de reset de los nucleos secundarios.
+En compilaciones previas no funcionales, la herramienta de reconstruccion relleno con bytes planos `0xFF` el area de padding en `0x00FFD000`, borrando el anclaje de reset de los nucleos secundarios.
 - **Mecanica del fallo:** Cuando el procesador principal (BSP) envia la interrupcion de inicio SIPI (vector `0xFD`), los nucleos auxiliares (APs) inician ejecucion en la direccion fisica `0xFD000` (mapeada en `0x00FFD000`). Al encontrar `0xFF 0xFF`, la CPU genera una excepcion `#UD` (Invalid Opcode) sin tabla IDT cargada, culminando en un Triple Fault instantaneo antes de completar la fase PEI.
 - **Correccion aplicada:** Se restauro la instruccion x86 en modo real de 16 bits:
   ```assembly
@@ -79,7 +78,7 @@ Para evitar bloqueos y demoras en el POST por consulta a hardware no presente en
 
 ### 3.5 Inyeccion ACPI DSDT y Driver LAN Realtek
 - **DSDT:** Se inyecto la tabla ACPI oficial de Qiyida (`dsdt_qiyida.bin`, 210,878 bytes) en `0x006A4134`, declarando el mapeo real de puertos USB 2.0/3.0, pistas PCIe, Super I/O en `0x2E/0x2F` y 192 procesadores logicos.
-- **LAN:** Se verifico la inclusion del driver Option ROM Realtek RTL8111H UEFI UNDI (`lan_qiyida.ffs`) en `0x00817FF8`.
+- **LAN:** Se verifico la inclusion del driver Option ROM Realtek RTL8111H UEFI UNDI en `0x00817FF8`.
 
 ### 3.6 Microcodigos Oficiales Intel 2024 y Reconstruccion FIT
 En el contenedor de microcodigos y en la tabla FIT (*Firmware Interface Table*, offset `0x00BF0000`), se actualizaron los parches de seguridad:
@@ -117,7 +116,7 @@ El hardware ya otorga permisos totales de lectura y escritura al procesador.
 ## 5. Metodos de Flasheo e Instalacion
 
 ### Metodo 1: Flasheo por Software desde Windows con Intel FPT (Sin Hardware Externo)
-Para flashear la imagen completa de 16 MB con la interfaz grafica (`qiyidax99d4interfazgrafica_reparada.rom`), se utiliza la opcion nativa de anulacion de proteccion de Intel ME incluida en la propia BIOS:
+Para flashear la imagen completa de 16 MB con la interfaz grafica (`qiyidax99d4interfazgraficamodbeta.rom`), se utiliza la opcion nativa de anulacion de proteccion de Intel ME incluida en la propia BIOS:
 
 1. **Reiniciar y entrar a la BIOS:** Pulsar la tecla `Supr` o `Del` durante el encendido.
 2. **Habilitar modo de sobrescritura de ME:**
@@ -132,7 +131,7 @@ Para flashear la imagen completa de 16 MB con la interfaz grafica (`qiyidax99d4i
    - Abrir Símbolo del Sistema (`cmd.exe`) o PowerShell con **privilegios de Administrador** en la carpeta del repositorio.
    - Ejecutar la grabacion de la imagen de 16 MB:
      ```cmd
-     fptw64.exe -f qiyidax99d4interfazgrafica_reparada.rom
+     fptw64.exe -f qiyidax99d4interfazgraficamodbeta.rom
      ```
    - FPT borrara, escribira y verificara todas las regiones flash (`FPT Operation Successful`).
 5. **Clear CMOS Obligatorio:**
@@ -148,7 +147,7 @@ Recomendado como metodo de maxima seguridad o para recuperacion en caso de fallo
 2. Abrir **NeoProgrammer** o **AsProgrammer**.
 3. Detectar el chip flash SPI de 16 MB (Winbond W25Q128 o equivalente).
 4. Realizar una lectura de respaldo previa (`Read IC`) y guardar el archivo (`backup_fabrica.bin`).
-5. Abrir el archivo `qiyidax99d4interfazgrafica_reparada.rom`.
+5. Abrir el archivo `qiyidax99d4interfazgraficamodbeta.rom`.
 6. Ejecutar la secuencia: `Erase IC` -> `Write IC` -> `Verify IC`.
 7. Retirar la pinza del chip, realizar un Clear CMOS de 5 minutos (retirando la pila CR2032) y encender el equipo.
 
@@ -163,22 +162,7 @@ No requiere modificar ninguna opcion previa en la BIOS ni reprogramar la region 
 
 ---
 
-## 6. Scripts de Compilacion y Verificacion
-
-El repositorio incluye las herramientas de auditoria para reproducir y certificar los cambios de forma independiente:
-
-- **`verify_all.py`:** Suite de comprobacion forense. Valida los 16,777,216 bytes, comprueba el anclaje del vector AP en `0x00FFD000`, verifica que `PCHSTRP10` tenga el bit 7 activo, audita la ausencia de los 24 modulos parasitos y corrobora las 4 entradas de microcodigo en la tabla FIT.
-  ```cmd
-  python verify_all.py
-  ```
-- **`build_repaired_rom.py`:** Script en Python que ejecuta la reconstruccion atomica de la imagen a partir de los modulos verificados y los bloques de padding UEFI estandar.
-  ```cmd
-  python build_repaired_rom.py
-  ```
-
----
-
-## 7. Creditos y Referencias
+## 6. Creditos y Referencias
 - Microcodigos de procesadores Intel: repositorio oficial [platomav/CPUMicrocodes](https://github.com/platomav/CPUMicrocodes).
 - Herramientas de analisis estructural de firmware: `UEFITool` y `UEFIExtract` por Nikolaj Schlej.
 - Especificaciones de arquitectura de plataforma: *Intel C610 Series Chipset and Intel X99 Chipset Datasheet*, *Intel 64 and IA-32 Architectures Software Developer's Manual*.

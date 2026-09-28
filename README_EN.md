@@ -29,16 +29,15 @@ Official and modified firmware repository for the Chinese Qiyida X99-D4 motherbo
 
 | File | Size | SHA-256 | Description |
 | :--- | :--- | :--- | :--- |
-| `qiyidax99d4interfazgrafica_reparada.rom` | 16,777,216 bytes | `f208445b5cfd55b8d171e288f237baae45fc2286d5844f386bbf5c46205a16d3` | Complete 16 MB firmware with Gigabyte UEFI GUI, AltMeDisable mitigation, 2024 microcodes, Nuvoton Super I/O, and Realtek LAN. |
+| `qiyidax99d4interfazgraficamodbeta.rom` | 16,777,216 bytes | `f208445b5cfd55b8d171e288f237baae45fc2286d5844f386bbf5c46205a16d3` | Complete 16 MB firmware with repaired Gigabyte UEFI graphical interface, AltMeDisable mitigation, 2024 microcodes, Nuvoton Super I/O, and Realtek LAN. |
 | `qiyidax99d4BiosUpdate.rom` | 16,777,216 bytes | `0bca95f4869ecdbbeac3d4d528b34063697dea17473a2a0adf2162ed77284b45` | Production-grade firmware based on factory BIOS with 2024 microcodes (Haswell rev 49, Broadwell rev 41). Flashed via software using `fptw64 -bios`. |
 | `qiyidax99d4ORIGINAL.rom` | 16,777,216 bytes | `0220fc2e42061ebde1634f231a52951631fc64e015770ba5fdd140e00b5e32d1` | Untouched factory flash dump (Intel SPS 3.1.3.72, 8 MB BIOS region). |
-| `X99UG.F7c` | 16,777,216 bytes | `90818dd14d621360badea1463f975a367952e2a0d43e7dc73401a7ab0a2d3a1f` | Original donor firmware from Gigabyte GA-X99-Ultra Gaming (F7c). |
 
 ---
 
 ## 3. Reverse Engineering and Structural Firmware Fixes
 
-The preliminary experimental mod (`qiyidax99d4interfazgraficamodbeta.rom`) suffered from critical architectural faults that prevented booting on physical hardware. In `qiyidax99d4interfazgrafica_reparada.rom`, the following low-level defects have been resolved:
+In `qiyidax99d4interfazgraficamodbeta.rom`, the following low-level defects have been resolved:
 
 ### 3.1 Multi-Processor Startup Reset Vector Restoration (Offset `0x00FFD000`)
 In the preliminary mod, the UEFITool rebuild process zeroed the padding block at `0x00FFD000` with flat `0xFF` bytes, obliterating the secondary processor reset hook.
@@ -117,7 +116,7 @@ The PCH hardware grants full read and write access to the CPU by default.
 ## 5. Flashing and Installation Procedures
 
 ### Method 1: Software Flashing from Windows via Intel FPT (No External Hardware)
-To flash the full 16 MB image containing the graphical UEFI interface (`qiyidax99d4interfazgrafica_reparada.rom`), use the native Intel ME protection override exposed in the factory BIOS:
+To flash the full 16 MB image containing the graphical UEFI interface (`qiyidax99d4interfazgraficamodbeta.rom`), use the native Intel ME protection override exposed in the factory BIOS:
 
 1. **Enter the BIOS:** Power on the machine and tap `Del`.
 2. **Enable Intel ME Reflash Mode:**
@@ -132,7 +131,7 @@ To flash the full 16 MB image containing the graphical UEFI interface (`qiyidax9
    - Open Command Prompt (`cmd.exe`) or PowerShell with **Administrator privileges** in the repository directory.
    - Execute the 16 MB full-chip flash:
      ```cmd
-     fptw64.exe -f qiyidax99d4interfazgrafica_reparada.rom
+     fptw64.exe -f qiyidax99d4interfazgraficamodbeta.rom
      ```
    - FPT will erase, write, and verify all flash regions (`FPT Operation Successful`).
 5. **Mandatory Clear CMOS:**
@@ -148,7 +147,7 @@ Recommended for recovery or as a zero-risk fail-safe procedure:
 2. Open **NeoProgrammer** or **AsProgrammer**.
 3. Detect the 16 MB SPI flash IC (Winbond W25Q128 or equivalent).
 4. Perform a full backup read (`Read IC`) and save the file (`backup_factory.bin`).
-5. Load `qiyidax99d4interfazgrafica_reparada.rom`.
+5. Load `qiyidax99d4interfazgraficamodbeta.rom`.
 6. Run: `Erase IC` -> `Write IC` -> `Verify IC`.
 7. Remove the test clip, perform a 5-minute Clear CMOS (removing the CR2032 battery), and boot the system.
 
@@ -163,22 +162,7 @@ Does not require BIOS setting adjustments or ME region flashing.
 
 ---
 
-## 6. Build and Verification Tooling
-
-The repository provides automated scripts to inspect and rebuild the firmware:
-
-- **`verify_all.py`:** Comprehensive forensic test suite. Verifies the exact 16,777,216-byte size, validates the AP reset vector at `0x00FFD000`, confirms `PCHSTRP10` bit 7 (`AltMeDisable`), asserts absence of all 24 extraneous modules, and parses all FIT table microcode pointers.
-  ```cmd
-  python verify_all.py
-  ```
-- **`build_repaired_rom.py`:** Python script executing clean, byte-accurate reconstruction of the image from verified modules and standard UEFI padding structures.
-  ```cmd
-  python build_repaired_rom.py
-  ```
-
----
-
-## 7. Credits and Technical References
+## 6. Credits and Technical References
 - CPU Microcodes: official Intel repository maintained by [platomav/CPUMicrocodes](https://github.com/platomav/CPUMicrocodes).
 - Firmware Structural Analysis Tools: `UEFITool` and `UEFIExtract` by Nikolaj Schlej.
 - Architecture References: *Intel C610 Series Chipset and Intel X99 Chipset Datasheet*, *Intel 64 and IA-32 Architectures Software Developer's Manual*.
