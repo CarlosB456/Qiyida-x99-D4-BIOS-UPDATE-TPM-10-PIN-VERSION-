@@ -102,8 +102,8 @@ Actualizados en el Firmware Interface Table (FIT, offset `0x00BF0000`):
 En comunidades tecnicas existe la creencia de que se requiere puentear pines del chip de audio Realtek durante 3 segundos para flashear placas base chinas con `fptw64.exe`. **Esto es innecesario en la placa Qiyida X99-D4**.
 
 ### 4.1 Permisos en el Intel Flash Descriptor de Fabrica
-En el Flash Descriptor, el registro de permisos del host `FLMSTR1` reside en la seccion Flash Master Base Address (FMBA, offset `0x0100`).
-En el firmware de fabrica ([qiyidax99d4ORIGINAL.rom](file:///c:/Users/Benja/Desktop/Qiyida-x99-D4-BIOS-UPDATE-TPM-10-PIN-VERSION--main/qiyidax99d4ORIGINAL.rom)), `FLMSTR1` en offset `0x0100` tiene definidos permisos directos de lectura y escritura para el procesador host.
+En el Flash Descriptor, el registro de permisos del host `FLMSTR1` reside en la seccion Flash Master Base Address (FMBA, offset base `0x0060`, vinculado a la configuracion del mapa de descriptores junto con FPSBA en offset `0x0100`).
+En el firmware de fabrica ([qiyidax99d4ORIGINAL.rom](file:///c:/Users/Benja/Desktop/Qiyida-x99-D4-BIOS-UPDATE-TPM-10-PIN-VERSION--main/qiyidax99d4ORIGINAL.rom)), `FLMSTR1` en offset `0x0060` (vinculado al mapa de descriptores en `0x0100`) tiene definidos permisos directos de lectura y escritura (`0xFFFF0000`, Read Access = `0xFF`, Write Access = `0xFF`) para el procesador host.
 
 ### 4.2 Estado de Protecciones en NVRAM
 - **`BIOS Lock`** (Registro PCH `BC` bits `BLE` / `SMM_BWP`): Configurado en `Disabled (0)` de fabrica. El driver SMM `PchBiosWriteProtect` no instala manejadores SMI de bloqueo.

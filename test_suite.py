@@ -16,6 +16,11 @@ Verifies structural integrity, silicon requirements, and firmware repairs:
 11. Microcode storage blocks and Firmware Interface Table (FIT) integrity.
 12. Integrity of companion firmware images (ORIGINAL.rom and BiosUpdate.rom).
 13. SHA-256 cryptographic digest match.
+14. All Firmware Volume headers (0x00200000, 0x00280000, 0x00C00000) header lengths and checksums.
+15. Verification of all PE/TE modules in PEI volume: ImageBase alignment and absence of stale 0xFFDE memory references.
+16. SEC Core vector to PeiCore entry VA hand-off.
+17. FLMSTR1 host Flash Master permissions (0xFFFF0000).
+18. FIT microcode address pointers matching official Intel microcode headers.
 """
 
 import unittest
@@ -313,6 +318,74 @@ class TestQiyidaRomRepairs(unittest.TestCase):
         rom_hash = hashlib.sha256(self.rom).hexdigest()
         self.assertEqual(rom_hash, EXPECTED_MODBETA_SHA256,
                          f"Repaired ROM hash is {rom_hash}, expected {EXPECTED_MODBETA_SHA256}")
+
+    def test_18_all_firmware_volumes_header_checksums(self):
+        """All Firmware Volume headers (0x00200000, 0x00280000, 0x00C00000) must have valid _FVH headers and checksums."""
+        fv_offsets = [0x00200000, 0x00280000, 0x00C00000]
+        for fv_off in fv_offsets:
+            hdr = self.rom[fv_off:fv_off + 0x60]
+            sig = hdr[0x28:0x2C]
+            self.assertEqual(sig, b"_FVH", f"Invalid FV signature at 0x{fv_off:06X}")
+            hdr_len = int.from_bytes(hdr[0x30:0x32], "little")
+            self.assertGreaterEqual(hdr_len, 0x38, f"Invalid FV header length at 0x{fv_off:06X}")
+            words = [int.from_bytes(self.rom[fv_off + i:fv_off + i + 2], "little") for i in range(0, hdr_len, 2)]
+            fv_sum = sum(words) & 0xFFFF
+            self.assertEqual(fv_sum, 0, f"FV Header at 0x{fv_off:06X} has nonzero checksum sum: 0x{fv_sum:04X}")
+
+    def test_19_all_pei_modules_relocation_and_bounds(self):
+        """All PE/TE executables in PEI volume (0x00C00000-0x01000000) must have ImageBase == 0xFF000000 + ROM_offset."""
+        pei_vol = self.rom[0x00C00000:0x01000000]
+        mz_idx = 0
+        pe_count = 0
+        while True:
+            mz_idx = pei_vol.find(b"MZ", mz_idx)
+            if mz_idx == -1:
+                break
+            off = 0x00C00000 + mz_idx
+            e_lfanew = int.from_bytes(self.rom[off + 0x3C:off + 0x40], "little")
+            if off + e_lfanew + 4 <= len(self.rom) and self.rom[off + e_lfanew:off + e_lfanew + 4] == b"PE\x00\x00":
+                opt_hdr = off + e_lfanew + 24
+                img_base = int.from_bytes(self.rom[opt_hdr + 28:opt_hdr + 32], "little")
+                expected_base = 0xFF000000 + off
+                if img_base != 0:
+                    self.assertEqual(img_base, expected_base,
+                                     f"Stale or unaligned ImageBase at 0x{off:06X}: got 0x{img_base:08X}, expected 0x{expected_base:08X}")
+                self.assertFalse(0xFFDE0000 <= img_base <= 0xFFDEFFFF,
+                                 f"PE image at 0x{off:06X} still points to old unmapped 0xFFDE memory: 0x{img_base:08X}")
+                pe_count += 1
+            mz_idx += 2
+        self.assertGreater(pe_count, 30, f"Expected >30 PE modules in PEI volume, verified {pe_count}")
+
+    def test_20_sec_core_pei_entry_handoff(self):
+        """SEC Core vector at 0x00FFFFE0 must point exactly to PeiCore Entry VA (0xFFC01F54)."""
+        peicore_handoff = int.from_bytes(self.rom[0x00FFFFE0:0x00FFFFE4], "little")
+        self.assertEqual(peicore_handoff, 0xFFC01F54,
+                         f"SEC handoff vector at 0x00FFFFE0 is 0x{peicore_handoff:08X}, expected 0xFFC01F54")
+
+        peicore_base = 0x00C016C4
+        e_lfanew = int.from_bytes(self.rom[peicore_base + 0x3C:peicore_base + 0x40], "little")
+        opt_hdr = peicore_base + e_lfanew + 24
+        peicore_img_base = int.from_bytes(self.rom[opt_hdr + 28:opt_hdr + 32], "little")
+        peicore_entry_rva = int.from_bytes(self.rom[opt_hdr + 16:opt_hdr + 20], "little")
+        peicore_entry_va = peicore_img_base + peicore_entry_rva
+        self.assertEqual(peicore_entry_va, peicore_handoff,
+                         f"Computed PeiCore Entry VA 0x{peicore_entry_va:08X} does not match SEC vector 0x{peicore_handoff:08X}")
+
+    def test_21_flmstr1_host_flash_master_permissions(self):
+        """FLMSTR1 at offset 0x0060 (FMBA) must provide full read and write permissions (0xFFFF0000)."""
+        flmstr1 = int.from_bytes(self.rom[0x0060:0x0064], "little")
+        self.assertEqual(flmstr1, 0xFFFF0000,
+                         f"FLMSTR1 at 0x0060 is 0x{flmstr1:08X}, expected 0xFFFF0000 (unlocked host permissions)")
+
+    def test_22_fit_microcode_entries_match_headers(self):
+        """FIT table entries 1-4 must directly point to the valid Intel microcodes."""
+        fit_off = 0x00BF0000
+        for i, expected_addr in enumerate([0xFFD21F20, 0xFFD2A720, 0xFFD32320, 0xFFD3BB20], start=1):
+            entry = self.rom[fit_off + i * 16:fit_off + (i + 1) * 16]
+            addr = int.from_bytes(entry[0:8], "little")
+            entry_type = entry[14] & 0x7F
+            self.assertEqual(entry_type, 0x01, f"FIT entry {i} type is 0x{entry_type:02X}, expected 0x01")
+            self.assertEqual(addr, expected_addr, f"FIT entry {i} address is 0x{addr:08X}, expected 0x{expected_addr:08X}")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

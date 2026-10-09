@@ -1,0 +1,6 @@
+# Ignore temporary files and external local folders
+IA/
+__pycache__/
+*.pyc
+*.report.txt
+.pytest_cache/

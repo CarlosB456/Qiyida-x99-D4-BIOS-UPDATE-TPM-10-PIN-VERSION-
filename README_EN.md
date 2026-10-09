@@ -102,8 +102,8 @@ Updated in the Firmware Interface Table (FIT, offset `0x00BF0000`):
 In online modding communities, it is often asserted that paperclip pinmodding the Realtek audio chip for 3 seconds is required to flash Chinese X99 motherboards with `fptw64.exe`. **This is unnecessary on the Qiyida X99-D4**.
 
 ### 4.1 Intel Flash Descriptor Permissions
-In the Intel Flash Descriptor, host access rights are governed by `FLMSTR1` within the Flash Master Base Address (FMBA) section at offset `0x0100`.
-In the factory firmware ([qiyidax99d4ORIGINAL.rom](file:///c:/Users/Benja/Desktop/Qiyida-x99-D4-BIOS-UPDATE-TPM-10-PIN-VERSION--main/qiyidax99d4ORIGINAL.rom)), `FLMSTR1` at offset `0x0100` provides direct read and write permissions to the host CPU.
+In the Intel Flash Descriptor, host access rights are governed by `FLMSTR1` within the Flash Master Base Address section (FMBA, base offset `0x0060`, mapped alongside the descriptor register pointers including FPSBA at offset `0x0100`).
+In the factory firmware ([qiyidax99d4ORIGINAL.rom](file:///c:/Users/Benja/Desktop/Qiyida-x99-D4-BIOS-UPDATE-TPM-10-PIN-VERSION--main/qiyidax99d4ORIGINAL.rom)), `FLMSTR1` at offset `0x0060` (linked with the `0x0100` descriptor map) provides direct full read and write permissions (`0xFFFF0000`, Read Access = `0xFF`, Write Access = `0xFF`) to the host CPU.
 
 ### 4.2 Factory NVRAM Protection Variables
 - **`BIOS Lock`** (PCH register `BC` bits `BLE` / `SMM_BWP`): Configured as `Disabled (0)` by default. The SMM driver `PchBiosWriteProtect` registers no SMI write-protection handler.
