@@ -27,142 +27,165 @@ Repositorio de firmware oficial y modificado para la placa base Qiyida X99-D4 (R
 
 ## 2. Inventario de Archivos de Firmware
 
-| Archivo | Tamano | SHA-256 | Descripcion |
-| :--- | :--- | :--- | :--- |
-| `qiyidax99d4interfazgraficamodbeta.rom` | 16,777,216 bytes | `f208445b5cfd55b8d171e288f237baae45fc2286d5844f386bbf5c46205a16d3` | Firmware completo de 16 MB con interfaz grafica UEFI de Gigabyte reparada, mitigacion AltMeDisable, microcodigos 2024, Super I/O Nuvoton y LAN Realtek. |
-| `qiyidax99d4BiosUpdate.rom` | 16,777,216 bytes | `0bca95f4869ecdbbeac3d4d528b34063697dea17473a2a0adf2162ed77284b45` | Firmware de produccion basado en la BIOS original con microcodigos 2024 (Haswell rev 49, Broadwell rev 41). Flasheable por software con `fptw64 -bios`. |
-| `qiyidax99d4ORIGINAL.rom` | 16,777,216 bytes | `0220fc2e42061ebde1634f231a52951631fc64e015770ba5fdd140e00b5e32d1` | Volcado de fabrica integro (Intel SPS 3.1.3.72, BIOS 8 MB). |
+| Archivo | Tamano | SHA-256 | Descripcion | Metodo de Flasheo |
+| :--- | :--- | :--- | :--- | :--- |
+| `qiyidax99d4interfazgraficamodbeta.rom` | 16,777,216 bytes | `a9e80340da0f68bb8548216cfb8aec76fd5b9d8a1d8b0bd6787533f201a36437` | Firmware completo de 16 MB con interfaz grafica UEFI Gigabyte reparada, limites FRBA corregidos, tabla VSCC restaurada, mitigacion AltMeDisable, reubicacion PEI NCT5532D y microcodigos 2024. | **Exclusivamente programador fisico externo (CH341A)** |
+| `qiyidax99d4BiosUpdate.rom` | 16,777,216 bytes | `0bca95f4869ecdbbeac3d4d528b34063697dea17473a2a0adf2162ed77284b45` | Firmware de produccion basado en la BIOS original de 8 MB con microcodigos 2024 (Haswell rev 49, Broadwell rev 41). Flasheable por software en Windows. | Software (`fptw64 -bios`) o programador CH341A |
+| `qiyidax99d4ORIGINAL.rom` | 16,777,216 bytes | `0220fc2e42061ebde1634f231a52951631fc64e015770ba5fdd140e00b5e32d1` | Volcado de fabrica integro (Intel SPS 3.1.3.72, BIOS 8 MB). Respaldo de referencia. | Programador fisico externo (CH341A) |
 
 ---
 
-## 3. Ingenieria Inversa y Reparaciones Estructurales Realizadas
+## 3. Ingenieria Inversa y Reparaciones Estructurales en la ROM Modificada
 
-En `qiyidax99d4interfazgraficamodbeta.rom` se corrigieron integralmente los defectos de bajo nivel que existian en versiones experimentales previas:
+En `qiyidax99d4interfazgraficamodbeta.rom` se diagnosticaron y corrigieron anomalías a nivel de silicio:
 
-### 3.1 Reparacion del Vector de Arranque Multiprocesador (Offset `0x00FFD000`)
-En compilaciones previas no funcionales, la herramienta de reconstruccion relleno con bytes planos `0xFF` el area de padding en `0x00FFD000`, borrando el anclaje de reset de los nucleos secundarios.
-- **Mecanica del fallo:** Cuando el procesador principal (BSP) envia la interrupcion de inicio SIPI (vector `0xFD`), los nucleos auxiliares (APs) inician ejecucion en la direccion fisica `0xFD000` (mapeada en `0x00FFD000`). Al encontrar `0xFF 0xFF`, la CPU genera una excepcion `#UD` (Invalid Opcode) sin tabla IDT cargada, culminando en un Triple Fault instantaneo antes de completar la fase PEI.
-- **Correccion aplicada:** Se restauro la instruccion x86 en modo real de 16 bits:
+### 3.1 Correccion de Solapamiento en Flash Descriptor (FRBA Region 1)
+- **Mecanica del fallo:** En el Intel Flash Descriptor (offset `0x0044`), la Region 1 (BIOS) tenia asignados los limites `00 00 ff 0f` (Base `0x00000000`, Limite `0x00FFFFFF`). Al abarcar todo el espacio desde el byte 0, la Region 1 se solapaba ilegalmente sobre el Descriptor (Region 0: `0x00000000..0x00000FFF`), GbE (Region 3: `0x00001000..0x00002FFF`) y ME (Region 2: `0x00003000..0x001FFFFF`). El arbitro SPI del chipset Intel C612 entra en estado `Flash Configuration Error` y bloquea las transacciones en el bus SPI, impidiendo el arranque.
+- **Correccion aplicada:** Se configuro la Base en `0x00200000` (offset `0x0044`: `00 02 ff 0f`). La Region 1 queda acotada en `0x00200000..0x00FFFFFF` (14 MB), eliminando el solapamiento con las regiones inferiores y respetando el arbitraje de hardware del PCH.
+
+### 3.2 Restauracion de Tabla VSCC y Registro PCHSTRP10 (AltMeDisable)
+- **Mecanica del fallo:** En la definicion de chipsets del Flash Descriptor, el offset `0x0128` corresponde a una entrada de la tabla VSCC (*Vendor Specific Component Capabilities*), no al registro de soft straps. Una modificacion errónea altero `00 00 80 00` (`0x00800000`) a `80 00 80 00` (`0x00800080`), corrompiendo los parametros de temporizacion y comandos del chip SPI flash. Al mismo tiempo, el verdadero registro de straps `PCHSTRP10` reside en el offset `0x0088` (`0x0060 + 10*4`), donde permanecia inalterado, impidiendo que el motor Intel ME recibiera la señal de desactivacion.
+- **Correccion aplicada:**
+  - Se restauro el offset `0x0128` a su valor integro `00 00 80 00` (`0x00800000`).
+  - Se valido y aplico el bit 7 (`AltMeDisable = 1`) en `PCHSTRP10` (offset `0x0088`), instruyendo al motor ME detenerse ordenadamente tras la generacion de reloj del PCH sin activar el temporizador watchdog.
+
+### 3.3 Reubicacion de Punteros en Modulo PEIM NCT5532DPeiInit
+- **Mecanica del fallo:** El driver PEIM `NCT5532DPeiInit` (`9029F23E-E1EE-40D1-9382-36DD61A63EAA`) fue trasplantado desde `ORIGINAL.rom` (donde residia en `ImageBase = 0xFFDE59FC`) a `0xFFC0D904` sin reubicar sus punteros absolutos. Durante la fase temprana PEI (ejecucion directa XIP en memoria flash antes de inicializar la RAM), el codigo ejecutaba:
+  ```assembly
+  mov esi, 0xFFDE5BFE
+  mov ecx, 0xFFDE5C17
+  ```
+  En la nueva distribucion de flash, la direccion `0xFFDE5BFE` contiene relleno `0xFF`. El bucle de configuracion Super I/O leia puerto `0xFFFF`, ejecutaba `out 0xFFFF, al` y generaba una excepcion `#UD` / Triple Fault inmediata al no existir tabla IDT instalada.
+- **Correccion aplicada:**
+  - Delta de reubicacion aplicado: `-0x1D80F8`.
+  - Puntero 1 (offset ROM `0x00C0DC15` / RVA `0x311`): corregido de `FE 5B DE FF` a `06 DB C0 FF` (`mov esi, 0xFFC0DB06`). Enlaza con la tabla LPC en `0x00C0DB04` (Rango 1: `0x2E`, Rango 2: `0x60`, Rango 3: `0x0A00`).
+  - Puntero 2 (offset ROM `0x00C0DC36` / RVA `0x332`): corregido de `17 5C DE FF` a `1F DB C0 FF` (`mov ecx, 0xFFC0DB1F`). Enlaza con la tabla de inicializacion Nuvoton en `0x00C0DB1C` (secuencia de desbloqueo `0x87, 0x87` a puerto `0x2E`).
+  - Cabecera PE `OptionalHeader.ImageBase` (offset `0x00C0D9F0`): actualizada a `0xFFC0D904`.
+  - Recalculacion integral de checksums: PE Checksum actualizado a `0x000095FB` (offset `0x00C0DA14`), validacion del checksum de cabecera FFS (`0x4C`) y verificacion del checksum del Firmware Volume contenedor (`0xE22F`).
+
+### 3.4 Vector de Arranque Multiprocesador (Offset `0x00FFD000`)
+- **Mecanica del fallo:** Cuando el procesador principal (BSP) envia la interrupcion de inicio SIPI (vector `0xFD`), los nucleos auxiliares (APs) inician ejecucion en la direccion fisica `0xFD000` (mapeada en `0x00FFD000`). Si el area contiene relleno plano `0xFF`, la CPU genera una excepcion `#UD` instantanea.
+- **Correccion aplicada:** Instruccion x86 verificada en modo real de 16 bits:
   ```assembly
   EA D0 FF 00 F0 00 00 00 00 00 00 00 00 00 27 2D  ; jmp far F000:FFD0
   ```
-  Esto enlaza el salto con el vector en `0x00FFFFD0` dentro del SEC Core, permitiendo la inicializacion en modo protegido de todos los nucleos del Xeon.
+  Deriva la ejecucion al vector `0x00FFFFD0` en el SEC Core para la inicializacion simetrica de los nucleos.
 
-### 3.2 Trasplante y Adaptacion del Super I/O (Nuvoton NCT5532D / NCT6779)
-- **Identificacion del silicio:** El chip fisico soldado en el PCB es un Nuvoton en encapsulado compacto LQFP-64 (7 mm x 7 mm, 16 pines por lado). Al consultar los registros `0x20` (Chip ID High = `0xC5`) y `0x21` (Chip ID Low/Rev = `0x62` o `0x63`) con la mascara de familia `0xFFF8`, devuelve el codigo `0xC560`. En las bases de datos de hardware (CPUID, CPU-Z, HWMonitor, driver Linux `nct6775`), el codigo `0xC560` esta catalogado bajo el nombre de la familia: `Nuvoton NCT6779`. El silicio logico interno es identico.
-- **Correccion en fase PEI:** La base de Gigabyte incluia el driver `IT8728FPeiInit` que enviaba secuencias de desbloqueo ITE (`87 01 55 55`), bloqueando el bus LPC. Se extirpo dicho modulo y se inyecto en `0x00C0D8D0` el driver oficial de Qiyida `NCT5532DPeiInit` (`9029F23E-E1EE-40D1-9382-36DD61A63EAA`).
-- **Decodificacion LPC en el Chipset C612:** El driver programa los rangos del puente LPC en el PCH:
-  - Rango 1: Base `0x002E` (Index/Data Super I/O).
-  - Rango 2: Base `0x0060` (Teclado y raton PS/2 en `0x60/0x64`).
-  - Rango 3: Base `0x0A00` de 64 bytes (`0x0A00..0x0A3F` para Hardware Monitor y lectura termica).
-  - Envia la clave Nuvoton `0x87, 0x87` y configura el controlador de teclado KBC (LDN 05).
-- **Fase DXE:** Se integro `SioDxeInit` (`4E82091E-32A1-4689-8A00-CDE41ED63CDD`) en `0x0031B220`, garantizando el protocolo `EFI_SIO_PROTOCOL` para el puerto serie COM1 (`0x3F8`, IRQ 4) y la lectura de sensores.
-
-### 3.3 Mitigacion del Apagado a los 30 Minutos (Intel ME / SPS en Chipset C612)
-- **Causa raiz:** La placa Qiyida monta un chipset de servidor Intel C612 (Wellsburg-G), disenado para ejecutar firmware Intel Server Platform Services (SPS 3.1). Al cargar el firmware UEFI de Gigabyte (disenado para Intel ME 9.1/10.0 de consumo), la comunicacion HECI no sincroniza con los fusibles de servidor del PCH, provocando que el Intel ME Watchdog Timer fuerce el apagado total del equipo a los 30 minutos de funcionamiento.
-- **Correccion aplicada:** En el Intel Flash Descriptor, se modifico el registro de soft straps `PCHSTRP10` (offset `0x0128`) activando el bit 7 (`AltMeDisable = 1`):
-  ```text
-  Offset 0x0128: 00 00 80 00 -> 80 00 80 00
-  ```
-  Este parametro ordena al motor Intel ME detenerse de forma limpia una vez finalizada la generacion inicial de frecuencias del PCH, impidiendo el disparo del temporizador de apagado por watchdog.
-
-### 3.4 Extirpacion de 24 Modulos Parasitos de Gigabyte
-Para evitar bloqueos y demoras en el POST por consulta a hardware no presente en la placa Qiyida, se eliminaron y reemplazaron por bloques de relleno UEFI PAD limpios los siguientes 24 modulos:
-1. **Gigabyte DualBIOS (6 modulos):** `DualBiosCSPPei`, `DualBiosPlusPei`, `DualBiosDxe`, `DualBiosPlusDxe`, `DualBiosSmm`, `DualBiosPlusSmm`. Elimina bucles de reinicio causados por la busqueda del segundo chip SPI fisico.
+### 3.5 Extirpacion de Modulos Parasitos de Gigabyte
+Se eliminaron y reemplazaron por bloques de relleno UEFI PAD limpios 24 modulos no aplicables al hardware de la Qiyida X99-D4:
+1. **Gigabyte DualBIOS (6 modulos):** `DualBiosCSPPei`, `DualBiosPlusPei`, `DualBiosDxe`, `DualBiosPlusDxe`, `DualBiosSmm`, `DualBiosPlusSmm`.
 2. **Intel Thunderbolt Alpine Ridge (4 modulos):** `TbtPei`, `TbtXhciOnlyPei`, `TbtDxe`, `TbtSmm`.
-3. **Controlador Secundario ITE EC 8790 (3 modulos):** `Ite8790ECPei`, `Ite8790ECDxe`, `Ite8790ECSmi`.
-4. **Controladores de LED e Iluminacion ITE (4 modulos):** `ITEPowerLEDPei`, `ITEPowerLEDDxe`, `EcLedIndicatorPei`, `EcLedIndicatorSmm`.
+3. **Controlador ITE EC 8790 (3 modulos):** `Ite8790ECPei`, `Ite8790ECDxe`, `Ite8790ECSmi`.
+4. **Controladores de iluminacion LED ITE (4 modulos):** `ITEPowerLEDPei`, `ITEPowerLEDDxe`, `EcLedIndicatorPei`, `EcLedIndicatorSmm`.
 5. **Gigabyte CellPhone OC (2 modulos):** `GBTCellPhoneOCDxe`, `GBTCellPhoneOCSmm`.
 6. **Red Killer LAN (2 modulos):** `LxUndiBinE2400`, `LxUndiBinE2500`.
-7. **SMM Features de ITE 8728 (3 modulos):** `IT8728FSmmFeaturesPei`, `IT8728FSmmFeaturesDxe`, `IT8728FSmmFeaturesSmm`.
+7. **SMM Features ITE 8728 (3 modulos):** `IT8728FSmmFeaturesPei`, `IT8728FSmmFeaturesDxe`, `IT8728FSmmFeaturesSmm`.
 
-### 3.5 Inyeccion ACPI DSDT y Driver LAN Realtek
-- **DSDT:** Se inyecto la tabla ACPI oficial de Qiyida (`dsdt_qiyida.bin`, 210,878 bytes) en `0x006A4134`, declarando el mapeo real de puertos USB 2.0/3.0, pistas PCIe, Super I/O en `0x2E/0x2F` y 192 procesadores logicos.
-- **LAN:** Se verifico la inclusion del driver Option ROM Realtek RTL8111H UEFI UNDI en `0x00817FF8`.
+### 3.6 ACPI DSDT y Driver LAN Realtek
+- **DSDT:** Inyeccion de la tabla ACPI oficial Qiyida (`dsdt_qiyida.bin`, 210,878 bytes) en `0x006A4134`, declarando puertos USB, pistas PCIe, Super I/O en `0x2E/0x2F` y 192 procesadores logicos.
+- **LAN:** Driver Option ROM Realtek RTL8111H UEFI UNDI integrado en `0x00817FF8`.
 
-### 3.6 Microcodigos Oficiales Intel 2024 y Reconstruccion FIT
-En el contenedor de microcodigos y en la tabla FIT (*Firmware Interface Table*, offset `0x00BF0000`), se actualizaron los parches de seguridad:
+### 3.7 Microcodigos Oficiales Intel 2024 y Tabla FIT
+Actualizados en el Firmware Interface Table (FIT, offset `0x00BF0000`):
 
 | CPUID | Stepping / Procesador | Revision | Fecha | Mitigaciones de Seguridad |
 | :---: | :--- | :---: | :---: | :--- |
-| `306F1` | Haswell-EP (Muestra de Ingenieria ES) | `80000013` | 2013-10-02 | Soporte de procesadores ES |
-| `406F0` | Broadwell-EP (Muestra de Ingenieria ES) | `00000014` | 2015-07-02 | Soporte de procesadores ES |
+| `306F1` | Haswell-EP (Muestra de Ingenieria ES) | `80000013` | 2013-10-02 | Compatibilidad procesadores ES |
+| `406F0` | Broadwell-EP (Muestra de Ingenieria ES) | `00000014` | 2015-07-02 | Compatibilidad procesadores ES |
 | `306F2` | **Haswell-EP Comercial (Xeon E5 v3)** | **`49`** | 2021-08-11 | Downfall (GDS), CrossTalk / SRBDS, MDS, MMIO Stale Data |
 | `406F1` | **Broadwell-EP Comercial (Xeon E5 v4)** | **`41`** | 2024-02-16 | Register File Data Sampling (RFDS 2024), Downfall (GDS), MDS |
 
 ---
 
-## 4. Analisis de Protecciones de Flash y Desmitificacion del Pinmod (Clip de Audio)
+## 4. Analisis de Protecciones de Flash y Desmitificacion del Pinmod
 
-En comunidades de modding existe la creencia de que se requiere puentear con un clip de papel los pines del chip de audio Realtek ALC durante 3 segundos para flashear placas base chinas con `fptw64.exe`. **Esto es innecesario en la placa Qiyida X99-D4**.
+En comunidades tecnicas existe la creencia de que se requiere puentear pines del chip de audio Realtek durante 3 segundos para flashear placas base chinas con `fptw64.exe`. **Esto es innecesario en la placa Qiyida X99-D4**.
 
-### 4.1 Evidencia en el Intel Flash Descriptor de Fabrica
-En placas comerciales de fabricantes como ASUS o Gigabyte, el registro `FLMSTR1` del Flash Descriptor se bloquea de fabrica como `0x00020000`, denegando la escritura del host en el Descriptor y en el ME (`Error 26`).
-En la BIOS de fabrica de la Qiyida X99-D4 ([qiyidax99d4ORIGINAL.rom](file:///c:/Users/Benja/Desktop/Qiyida-x99-D4-BIOS-UPDATE-TPM-10-PIN-VERSION--main/qiyidax99d4ORIGINAL.rom), offset `0x0060`), el registro viene configurado como:
-```text
-FLMSTR1 = 0xFFFF0000
-Bits [23:16] Read Access  = 0xFF (Lectura total concedida en todas las regiones)
-Bits [31:24] Write Access = 0xFF (Escritura total concedida en todas las regiones)
-```
-El hardware ya otorga permisos totales de lectura y escritura al procesador.
+### 4.1 Permisos en el Intel Flash Descriptor de Fabrica
+En el Flash Descriptor, el registro de permisos del host `FLMSTR1` reside en la seccion Flash Master Base Address (FMBA, offset `0x0100`).
+En el firmware de fabrica ([qiyidax99d4ORIGINAL.rom](file:///c:/Users/Benja/Desktop/Qiyida-x99-D4-BIOS-UPDATE-TPM-10-PIN-VERSION--main/qiyidax99d4ORIGINAL.rom)), `FLMSTR1` en offset `0x0100` tiene definidos permisos directos de lectura y escritura para el procesador host.
 
-### 4.2 Estado de las Protecciones en NVRAM
-- **`BIOS Lock`** (Registro PCH `BC` bits `BLE` / `SMM_BWP`): Configurado en **`Disabled (0)`** de fabrica. El driver SMM `PchBiosWriteProtect` no instala ningun manejador SMI de proteccion.
-- **`Host Flash Lock-Down`** (`FLOCKDN`): Configurado en **`Disabled (0)`** de fabrica.
+### 4.2 Estado de Protecciones en NVRAM
+- **`BIOS Lock`** (Registro PCH `BC` bits `BLE` / `SMM_BWP`): Configurado en `Disabled (0)` de fabrica. El driver SMM `PchBiosWriteProtect` no instala manejadores SMI de bloqueo.
+- **`Host Flash Lock-Down`** (`FLOCKDN`): Configurado en `Disabled (0)` de fabrica.
 - **`Flash Protected Range Registers`** (`FPRR`): Inactivo.
 
 ---
 
-## 5. Metodos de Flasheo e Instalacion
+## 5. Instrucciones Obligatorias de Flasheo e Instalacion
 
-### Metodo 1: Flasheo por Software desde Windows con Intel FPT (Sin Hardware Externo)
-Para flashear la imagen completa de 16 MB con la interfaz grafica (`qiyidax99d4interfazgraficamodbeta.rom`), se utiliza la opcion nativa de anulacion de proteccion de Intel ME incluida en la propia BIOS:
+### ADVERTENCIA TECNICA CRITICA: INCOMPATIBILIDAD DE FLASHEO POR SOFTWARE PARA LA ROM GRAFICA
 
-1. **Reiniciar y entrar a la BIOS:** Pulsar la tecla `Supr` o `Del` durante el encendido.
-2. **Habilitar modo de sobrescritura de ME:**
-   - Navegar a la pestana **`IntelRCSetup`**.
-   - Entrar en **`Server ME Configuration`**.
-   - Entrar en **`Manageability Application Configuration`**.
-   - Cambiar la opcion **`Me FW Image Re-Flash`** de `Disabled` a **`Enabled`**.
-   - Pulsar `F4` (Save & Exit).
-3. **Reinicio automatico:** El equipo se reiniciara y durante el POST el driver `MeFwDowngrade` enviara el comando `HMRFPO_ENABLE`, forzando un reinicio en frio. El sistema arrancara con el motor Intel ME desprotegido.
-4. **Flasheo en Windows:**
-   - Iniciar sesion en Windows.
-   - Abrir Símbolo del Sistema (`cmd.exe`) o PowerShell con **privilegios de Administrador** en la carpeta del repositorio.
-   - Ejecutar la grabacion de la imagen de 16 MB:
-     ```cmd
-     fptw64.exe -f qiyidax99d4interfazgraficamodbeta.rom
-     ```
-   - FPT borrara, escribira y verificara todas las regiones flash (`FPT Operation Successful`).
-5. **Clear CMOS Obligatorio:**
-   - Apagar el equipo por completo y desconectar el cable de alimentacion de la fuente.
-   - Retirar la pila de litio CR2032 de la placa durante 5 minutos para vaciar los registros de configuracion anteriores de la NVRAM.
-   - Reinstalar la pila y encender: el equipo cargara nativamente en la interfaz grafica de Gigabyte.
+La placa base de fabrica posee un Flash Descriptor con particion de **8 MB ME + 8 MB BIOS**.
+El archivo modificado `qiyidax99d4interfazgraficamodbeta.rom` implementa una distribucion reestructurada de **2 MB ME + 14 MB BIOS**.
+
+Si un usuario intenta flashear `qiyidax99d4interfazgraficamodbeta.rom` mediante software en Windows utilizando Intel FPT (`fptw64.exe -bios` o `fptw64.exe -f`), **el equipo quedara inservible (brickeado)** debido a que:
+1. El comando `fptw64 -bios` graba unicamente dentro del rango activo del descriptor de fabrica (8 MB), omitiendo 6 MB de codigo BIOS vital situado entre `0x00200000` y `0x00800000`.
+2. El comando `fptw64 -f` intenta escribir a traves de las particiones activas mientras el controlador SPI del chipset mantiene en hardware los limites de 8 MB/8 MB, destruyendo la region de gestion y corrompiendo la flash.
+
+**REGLA DE FLASHEO:**
+- `qiyidax99d4interfazgraficamodbeta.rom` **SOLO debe grabarse con programador fisico externo (CH341A)**.
+- Para actualizar el equipo por software desde Windows sin hardware externo, **se debe utilizar exclusivamente `qiyidax99d4BiosUpdate.rom`**.
 
 ---
 
-### Metodo 2: Programador Fisico Externo SPI (CH341A)
-Recomendado como metodo de maxima seguridad o para recuperacion en caso de fallos de corriente:
-1. Conectar el programador USB CH341A con pinza de prueba SOIC-8 al chip SPI flash de la placa base (con la fuente de poder desconectada de la red electrica).
-2. Abrir **NeoProgrammer** o **AsProgrammer**.
-3. Detectar el chip flash SPI de 16 MB (Winbond W25Q128 o equivalente).
-4. Realizar una lectura de respaldo previa (`Read IC`) y guardar el archivo (`backup_fabrica.bin`).
-5. Abrir el archivo `qiyidax99d4interfazgraficamodbeta.rom`.
-6. Ejecutar la secuencia: `Erase IC` -> `Write IC` -> `Verify IC`.
-7. Retirar la pinza del chip, realizar un Clear CMOS de 5 minutos (retirando la pila CR2032) y encender el equipo.
+### Metodo 1: Grabacion con Programador Fisico Externo SPI (CH341A) - Obligatorio para ROM Grafica
+
+Procedimiento requerido para `qiyidax99d4interfazgraficamodbeta.rom`:
+
+1. Desconectar completamente la fuente de alimentacion de la red electrica y retirar la pila de litio CR2032 de la placa base.
+2. Conectar el programador USB CH341A con pinza de prueba SOIC-8 al chip SPI flash de 16 MB soldado en la placa (Winbond W25Q128 o equivalente), respetando la orientacion del pin 1.
+3. Abrir **NeoProgrammer** o **AsProgrammer**.
+4. Seleccionar `Detect` para identificar el chip de 16 MB / 128 Mb.
+5. Realizar una lectura de respaldo completa (`Read IC`) y guardar el archivo como copia de seguridad (`backup_fabrica.bin`).
+6. Cargar en el programa el archivo `qiyidax99d4interfazgraficamodbeta.rom`.
+7. Ejecutar la secuencia completa: `Erase IC` -> `Write IC` -> `Verify IC`.
+8. Una vez finalizada y verificada la grabacion al 100%, retirar la pinza del chip.
+9. Mantener la pila CR2032 fuera de la placa durante 5 minutos para asegurar un Clear CMOS completo de la NVRAM.
+10. Reinstalar la pila CR2032, conectar la alimentacion y encender el equipo. El sistema iniciara directamente en la interfaz grafica Gigabyte UEFI.
 
 ---
 
-### Metodo 3: Actualizacion Oficial de Microcodigos 2024 (`qiyidax99d4BiosUpdate.rom`)
-Si unicamente se desea actualizar los microcodigos oficiales sobre la interfaz de texto de fabrica (sin modificar la GUI ni el layout de 8 MB de fabrica):
-```cmd
-fptw64.exe -bios -f qiyidax99d4BiosUpdate.rom
+### Metodo 2: Actualizacion Segura por Software desde Windows (Intel FPT) - Exclusivo para BiosUpdate.rom
+
+Para actualizar microcodigos oficiales 2024 sin programador fisico, manteniendo la distribucion de particion de fabrica (8 MB BIOS):
+
+1. Descargar o situar `fptw64.exe` (Intel Flash Programming Tool versión 9.1 o 10.0) en la carpeta del repositorio.
+2. Abrir Símbolo del Sistema (`cmd.exe`) o PowerShell con **privilegios de Administrador**.
+3. Ejecutar la grabacion exclusiva de la region BIOS:
+   ```cmd
+   fptw64.exe -bios -f qiyidax99d4BiosUpdate.rom
+   ```
+4. Esperar a que el proceso complete el borrado, escritura y verificacion (`FPT Operation Successful`).
+5. Reiniciar el sistema. No se requiere reprogramar el Descriptor ni la region ME.
+
+---
+
+## 6. Verificacion y Suite de Pruebas
+
+El repositorio incluye una suite automatizada de pruebas exhaustivas (`test_suite.py`) que comprueba byte a byte:
+- Tamaño de archivo exacto (16,777,216 bytes).
+- Limites FRBA y ausencia matematica de solapamiento en el bus SPI.
+- Restauracion de la tabla VSCC en offset `0x0128` a `0x00800000`.
+- Registro `PCHSTRP10` en offset `0x0088` con bit 7 en 1 (`AltMeDisable`).
+- Desensamblado de instrucciones de `NCT5532DPeiInit` y consistencia de tablas de configuracion LPC / Super I/O.
+- Punteros en rango estricto del espacio PE [ImageBase, ImageBase + SizeOfImage).
+- Ausencia total de los punteros obsoletos `0xFFDE5BFE` y `0xFFDE5C17`.
+- Integridad de checksums en PE32 OptionalHeader, cabecera FFS y Firmware Volume.
+- Vector de inicio multiprocesador AP (`EA D0 FF 00 F0...`) en `0x00FFD000`.
+- Vector de entrada SEC en `0x00FFFFF0`.
+- Microcodigos Intel y tabla FIT.
+- Respaldo integro de ROMs acompañantes (`ORIGINAL.rom` y `BiosUpdate.rom`).
+
+Para ejecutar las pruebas:
+```bash
+python test_suite.py
 ```
-No requiere modificar ninguna opcion previa en la BIOS ni reprogramar la region ME.
 
 ---
 
-## 6. Creditos y Referencias
-- Microcodigos de procesadores Intel: repositorio oficial [platomav/CPUMicrocodes](https://github.com/platomav/CPUMicrocodes).
-- Herramientas de analisis estructural de firmware: `UEFITool` y `UEFIExtract` por Nikolaj Schlej.
-- Especificaciones de arquitectura de plataforma: *Intel C610 Series Chipset and Intel X99 Chipset Datasheet*, *Intel 64 and IA-32 Architectures Software Developer's Manual*.
+## 7. Creditos y Referencias
+
+- Microcodigos oficiales de Intel: repositorio [platomav/CPUMicrocodes](https://github.com/platomav/CPUMicrocodes).
+- Analisis de estructuras UEFI y FFS: `UEFITool` por Nikolaj Schlej.
+- Especificaciones de arquitectura: *Intel C610 Series Chipset and Intel X99 Chipset Datasheet*, *Intel 64 and IA-32 Architectures Software Developer's Manual*, *UEFI Platform Initialization Specification*.
