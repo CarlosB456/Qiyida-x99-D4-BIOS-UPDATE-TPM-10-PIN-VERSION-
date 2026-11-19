@@ -4,24 +4,28 @@ Comprehensive Test Suite for qiyidax99d4interfazgraficamodbeta.rom.
 
 Verifies structural integrity, silicon requirements, and firmware repairs:
 1. Exact ROM File Size (16,777,216 bytes).
-2. Intel Flash Descriptor FRBA boundaries, 4KB page alignment, & elimination of illegal region overlaps.
-3. VSCC Table restoration in Upper Map (VTBA from FLUMAP1 at 0x0EFC, 184 bytes matching ORIGINAL.rom).
-4. PCHSTRP10 soft strap at FPSBA + 0x28 (0x0128) with AltMeDisable (bit 23 set).
-5. NCT5532DPeiInit relocation, instruction disassembly, and verification of non-0xFF data tables.
-6. Verification that target pointers reside strictly within PE Image bounds (ImageBase <= ptr < ImageBase + SizeOfImage).
-7. Verification that old broken pointers (0xFFDE5BFE, 0xFFDE5C17) are completely eradicated from NCT5532D.
-8. Checksum validity across PE32, FFS File Header, and Firmware Volume Header.
-9. AP Multi-Processor Reset Vector at 0x00FFD000.
-10. SEC Core Reset Vector at 0x00FFFFF0.
-11. Microcode storage blocks and Firmware Interface Table (FIT) integrity.
-12. Integrity of companion firmware images (ORIGINAL.rom and BiosUpdate.rom).
-13. SHA-256 cryptographic digest match.
-14. All Firmware Volume headers (0x00200000, 0x00280000, 0x00C00000) header lengths and checksums.
-15. Verification of all PE/TE modules in PEI volume: ImageBase alignment and absence of stale 0xFFDE memory references.
-16. SEC Core vector to PeiCore entry VA hand-off.
-17. FLMSTR1 host Flash Master permissions (0xFFFF0000).
-18. FIT microcode address pointers matching official Intel microcode headers.
-19. PEI Apriori execution order restoration with NCT5532DPeiInit at index [01] and SBPEI at index [06].
+2. Intel Flash Descriptor signature (0x0FF0A55A) at offset 0x10.
+3. Intel Flash Descriptor FRBA boundaries, 4KB page alignment, & elimination of illegal region overlaps.
+4. VSCC Table restoration in Upper Map (VTBA from FLUMAP1 at 0x0EFC, 184 bytes matching ORIGINAL.rom).
+5. PCHSTRP10 soft strap at FPSBA + 0x28 (0x0128) with AltMeDisable (bit 23 set).
+6. NCT5532DPeiInit relocation and pointers (0xFFC0DB06 and 0xFFC0DB1F).
+7. NCT5532DPeiInit instruction disassembly (mov esi / mov ecx loading data tables).
+8. NCT5532DPeiInit target data tables validity (non-0xFF Super I/O and LPC configs).
+9. Verification that target pointers reside strictly within PE Image bounds (ImageBase <= ptr < ImageBase + SizeOfImage).
+10. Verification that old broken pointers (0xFFDE5BFE, 0xFFDE5C17) are completely eradicated from NCT5532D.
+11. PE OptionalHeader.ImageBase at 0x00C0D9F0 must be 0xFFC0D904.
+12. Checksum validity across PE32, FFS File Header, and Firmware Volume Header.
+13. AP Multi-Processor Reset Vector at 0x00FFD000 (EA D0 FF 00 F0).
+14. SEC Core Reset Vector at 0x00FFFFF0 (NOP, NOP, JMP).
+15. Microcode storage blocks and Firmware Interface Table (FIT) integrity.
+16. Integrity of companion firmware images (ORIGINAL.rom and BiosUpdate.rom).
+17. SHA-256 cryptographic digest match.
+18. All Firmware Volume headers (0x00200000, 0x00280000, 0x00C00000) header lengths and checksums.
+19. Verification of all PE/TE modules in PEI volume: ImageBase alignment and absence of stale 0xFFDE memory references.
+20. SEC Core vector to PeiCore entry VA hand-off (0xFFC01F54).
+21. FLMSTR1 host Flash Master permissions (0xFFFF0000).
+22. FIT microcode address pointers matching official Intel microcode headers.
+23. PEI Apriori execution order restoration with NCT5532DPeiInit at index [01] and SBPEI at index [06].
 """
 
 import unittest
@@ -408,7 +412,17 @@ class TestQiyidaRomRepairs(unittest.TestCase):
         hdr_len = int.from_bytes(fv_hdr[0x30:0x32], "little")
         fv_len = int.from_bytes(fv_hdr[0x20:0x28], "little")
 
-        # Iterate FFS files within the PEI FV to locate Apriori file
+        # 1. Verify former Apriori block at 0x00C00078 was converted to a valid PAD file
+        pad_old = self.rom[0x00C00078:0x00C00078 + 24]
+        self.assertEqual(pad_old[18], 0xF0, "Offset 0x00C00078 must be EFI_FV_FILETYPE_PAD (0xF0)")
+        pad_old_size = int.from_bytes(pad_old[20:23], "little")
+        self.assertEqual(pad_old_size, 204, f"Expected PAD file size 204 at 0x00C00078, got {pad_old_size}")
+        pad_old_hdr_sum = (sum(pad_old[:16]) + pad_old[16] + sum(pad_old[18:23])) & 0xFF
+        self.assertEqual(pad_old_hdr_sum, 0, f"PAD at 0x00C00078 header checksum sum is 0x{pad_old_hdr_sum:02X}, expected 0")
+        wdt_guid = bytes.fromhex("42c5881df79d4a42aa9002b61f286938")  # 1D88C542-9DF7-424A-AA90-02B61F286938
+        self.assertEqual(self.rom[0x00C00148:0x00C00158], wdt_guid, "WdtPei must remain at 0x00C00148")
+
+        # 2. Iterate FFS files within the PEI FV to locate Apriori file
         off = hdr_len
         apriori_off = None
         while off < fv_len - 24:
@@ -425,6 +439,7 @@ class TestQiyidaRomRepairs(unittest.TestCase):
             off += (size + 7) & ~7
 
         self.assertIsNotNone(apriori_off, "Apriori.ffs not found in PEI volume (0x00C00000..0x01000000)")
+        self.assertEqual(apriori_off, 0x00C0E198, f"Apriori.ffs must reside at 0x00C0E198, got 0x{apriori_off:06X}")
 
         # Verify FFS Header checksums
         fhdr = self.rom[apriori_off:apriori_off + 24]
@@ -447,18 +462,35 @@ class TestQiyidaRomRepairs(unittest.TestCase):
         guids_raw = self.rom[apriori_off + 28:apriori_off + 24 + sec_size]
         self.assertEqual(len(guids_raw), 208, f"Expected 208 bytes of GUID entries (13 GUIDs), got {len(guids_raw)}")
 
-        # Verify [00]: StatusCodePei (E9DD7F62-25EC-4F9D-A4AB-AAD20BF59A10)
-        status_code_guid = bytes.fromhex("627fdde9ec259d4fa4abaad20bf59a10")
-        self.assertEqual(guids_raw[0:16], status_code_guid, "Apriori [00] is not StatusCodePei")
+        expected_guids = [
+            ("627fdde9ec259d4fa4abaad20bf59a10", "StatusCodePei"),
+            ("3ef22990eee1d140938236dd61a63eaa", "NCT5532DPeiInit"),
+            ("4fda3a9b56ae244c8deaf03b7558ae50", "PcdPeim"),
+            ("f7d21e0d2be9624592dd5c82ec917eae", "CRBPei"),
+            ("34cf8d837b90554d9a4ba0ef7167b5f4", "NVRAMPei"),
+            ("999d350146946d45ada450a711c03ada", "CpuPei"),
+            ("24d6fbc1ea27d140aa4894c3dc5c7e0d", "SBPEI"),
+            ("42c5881df79d4a42aa9002b61f286938", "WdtPei"),
+            ("39487b14be5d3f41917fdfeb687c6312", "PchResetPeim"),
+            ("5dd1ef0855ec2340b6487ba40df7d05d", "PeiRamBootPei"),
+            ("e76a23fd9107c448b29e29bdeee1a838", "PchInitPeim"),
+            ("1ae64f65da2e4947a76a56ed7ade1cbe", "CmosPei"),
+            ("d8a18819fc04684db58d636f36f30d82", "SoftStrapsPeim"),
+        ]
 
-        # Verify [01]: NCT5532DPeiInit (9029F23E-E1EE-40D1-9382-36DD61A63EAA) - Restored early priority
-        nct5532d_guid = bytes.fromhex("3ef22990eee1d140938236dd61a63eaa")
-        self.assertEqual(guids_raw[16:32], nct5532d_guid,
-                         f"Apriori [01] is not NCT5532DPeiInit! Got {guids_raw[16:32].hex()}")
+        for i, (guid_hex, name) in enumerate(expected_guids):
+            actual_guid = guids_raw[i * 16:(i + 1) * 16].hex()
+            self.assertEqual(actual_guid, guid_hex,
+                             f"Apriori entry [{i:02d}] is not {name}! Got {actual_guid}, expected {guid_hex}")
 
-        # Verify [06]: SBPEI (C1FBD624-27EA-40D1-AA48-94C3DC5C7E0D) - Restored
-        sbpei_guid = bytes.fromhex("24d6fbc1ea27d140aa4894c3dc5c7e0d")
-        self.assertEqual(guids_raw[6*16:7*16], sbpei_guid, "Apriori [06] is not SBPEI")
+        # 3. Verify remanent PAD file at 0x00C0E288
+        rem_pad = self.rom[0x00C0E288:0x00C0E288 + 24]
+        self.assertEqual(rem_pad[18], 0xF0, "Offset 0x00C0E288 must be EFI_FV_FILETYPE_PAD (0xF0)")
+        rem_pad_size = int.from_bytes(rem_pad[20:23], "little")
+        self.assertEqual(rem_pad_size, 1688, f"Expected remanent PAD size 1688, got {rem_pad_size}")
+        rem_pad_hdr_sum = (sum(rem_pad[:16]) + rem_pad[16] + sum(rem_pad[18:23])) & 0xFF
+        self.assertEqual(rem_pad_hdr_sum, 0, f"Remanent PAD header checksum sum is 0x{rem_pad_hdr_sum:02X}, expected 0")
+        self.assertEqual(0x00C0E288 + rem_pad_size, 0x00C0E920, "Remanent PAD must terminate exactly at 0x00C0E920")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
