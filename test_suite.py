@@ -5,8 +5,8 @@ Comprehensive Test Suite for qiyidax99d4interfazgraficamodbeta.rom.
 Verifies structural integrity, silicon requirements, and firmware repairs:
 1. Exact ROM File Size (16,777,216 bytes).
 2. Intel Flash Descriptor FRBA boundaries, 4KB page alignment, & elimination of illegal region overlaps.
-3. VSCC Table restoration at offset 0x0128 (restored to 0x00800000).
-4. PCHSTRP10 soft strap at offset 0x0088 with AltMeDisable (bit 7 set).
+3. VSCC Table restoration in Upper Map (VTBA from FLUMAP1 at 0x0EFC, 184 bytes matching ORIGINAL.rom).
+4. PCHSTRP10 soft strap at FPSBA + 0x28 (0x0128) with AltMeDisable (bit 23 set).
 5. NCT5532DPeiInit relocation, instruction disassembly, and verification of non-0xFF data tables.
 6. Verification that target pointers reside strictly within PE Image bounds (ImageBase <= ptr < ImageBase + SizeOfImage).
 7. Verification that old broken pointers (0xFFDE5BFE, 0xFFDE5C17) are completely eradicated from NCT5532D.
@@ -21,6 +21,7 @@ Verifies structural integrity, silicon requirements, and firmware repairs:
 16. SEC Core vector to PeiCore entry VA hand-off.
 17. FLMSTR1 host Flash Master permissions (0xFFFF0000).
 18. FIT microcode address pointers matching official Intel microcode headers.
+19. PEI Apriori execution order restoration with NCT5532DPeiInit at index [01] and SBPEI at index [06].
 """
 
 import unittest
@@ -32,7 +33,7 @@ ORIG_PATH = Path("qiyidax99d4ORIGINAL.rom")
 BIOS_UPD_PATH = Path("qiyidax99d4BiosUpdate.rom")
 
 EXPECTED_SIZE = 16777216  # 16 MB
-EXPECTED_MODBETA_SHA256 = "a9e80340da0f68bb8548216cfb8aec76fd5b9d8a1d8b0bd6787533f201a36437"
+EXPECTED_MODBETA_SHA256 = "074ce365c21b7c44fe175e50a6b956756160e7fd8ee5034097ae2e114fd5c0f9"
 EXPECTED_ORIG_SHA256 = "0220fc2e42061ebde1634f231a52951631fc64e015770ba5fdd140e00b5e32d1"
 EXPECTED_BIOS_UPD_SHA256 = "0bca95f4869ecdbbeac3d4d528b34063697dea17473a2a0adf2162ed77284b45"
 
@@ -112,18 +113,30 @@ class TestQiyidaRomRepairs(unittest.TestCase):
         self.assertGreaterEqual(reg1_base, reg2_limit + 1, "BIOS overlaps ME region")
 
     def test_04_vscc_table_restoration(self):
-        """Offset 0x0128 in VSCC table must be 00 00 80 00 (0x00800000)."""
-        vscc_bytes = self.rom[0x0128:0x012C]
-        self.assertEqual(vscc_bytes, bytes.fromhex("00008000"),
-                         f"VSCC at 0x0128 is {vscc_bytes.hex()}, expected 00008000 (0x00800000)")
-        vscc_val = int.from_bytes(vscc_bytes, "little")
-        self.assertEqual(vscc_val, 0x00800000)
+        """VSCC Table in Upper Map (VTBA from FLUMAP1 at 0x0EFC) must match ORIGINAL.rom exactly (184 bytes)."""
+        flumap1 = int.from_bytes(self.rom[0x0EFC:0x0F00], "little")
+        vtba = (flumap1 & 0xFF) << 4
+        self.assertEqual(vtba, 0x0DF0, f"Expected VTBA 0x0DF0, got 0x{vtba:04X}")
+        vscc_mod = self.rom[vtba:vtba + 184]
+
+        orig_rom = ORIG_PATH.read_bytes()
+        orig_flumap1 = int.from_bytes(orig_rom[0x0EFC:0x0F00], "little")
+        orig_vtba = (orig_flumap1 & 0xFF) << 4
+        vscc_orig = orig_rom[orig_vtba:orig_vtba + 184]
+
+        self.assertEqual(len(vscc_mod), 184, f"Expected 184 bytes, got {len(vscc_mod)}")
+        self.assertEqual(vscc_mod, vscc_orig, "VSCC table in repaired ROM does not match ORIGINAL.rom")
 
     def test_05_pchstrp10_altmedisable(self):
-        """PCHSTRP10 at offset 0x0088 must have AltMeDisable (bit 7) set to 1."""
-        strap_byte = self.rom[0x0088]
-        self.assertTrue(bool(strap_byte & 0x80),
-                        f"Bit 7 of PCHSTRP10 at offset 0x0088 is not set: byte is 0x{strap_byte:02X}")
+        """PCHSTRP10 at FPSBA + 0x28 (0x0128) must have AltMeDisable (bit 23) set to 1 (0x00800000)."""
+        flmap1 = int.from_bytes(self.rom[0x0018:0x001C], "little")
+        fpsba = ((flmap1 >> 16) & 0xFF) << 4
+        self.assertEqual(fpsba, 0x0100, f"Expected FPSBA 0x0100, got 0x{fpsba:04X}")
+        pchstrp10_off = fpsba + (10 * 4)
+        self.assertEqual(pchstrp10_off, 0x0128, f"Expected PCHSTRP10 offset 0x0128, got 0x{pchstrp10_off:04X}")
+        pchstrp10 = int.from_bytes(self.rom[pchstrp10_off:pchstrp10_off + 4], "little")
+        self.assertTrue(bool(pchstrp10 & 0x00800000),
+                        f"Bit 23 (AltMeDisable) of PCHSTRP10 at 0x{pchstrp10_off:04X} is not set: 0x{pchstrp10:08X}")
 
     def test_06_nct5532d_pei_relocation_and_pointers(self):
         """NCT5532DPeiInit must have pointers relocated to 0xFFC0DB06 and 0xFFC0DB1F."""
@@ -386,6 +399,66 @@ class TestQiyidaRomRepairs(unittest.TestCase):
             entry_type = entry[14] & 0x7F
             self.assertEqual(entry_type, 0x01, f"FIT entry {i} type is 0x{entry_type:02X}, expected 0x01")
             self.assertEqual(addr, expected_addr, f"FIT entry {i} address is 0x{addr:08X}, expected 0x{expected_addr:08X}")
+
+    def test_23_pei_apriori_nct5532d_order(self):
+        """Apriori.ffs (1B45CC0A-156A-428A-AF62-49864DA0E6E6) must exist in PEI FV with valid checksums and NCT5532DPeiInit at index [01]."""
+        apriori_guid = bytes.fromhex("0acc451b6a158a42af6249864da0e6e6")  # 1B45CC0A-156A-428A-AF62-49864DA0E6E6
+        pei_start = 0x00C00000
+        fv_hdr = self.rom[pei_start:pei_start + 0x48]
+        hdr_len = int.from_bytes(fv_hdr[0x30:0x32], "little")
+        fv_len = int.from_bytes(fv_hdr[0x20:0x28], "little")
+
+        # Iterate FFS files within the PEI FV to locate Apriori file
+        off = hdr_len
+        apriori_off = None
+        while off < fv_len - 24:
+            fhdr = self.rom[pei_start + off:pei_start + off + 24]
+            state = fhdr[23]
+            if state == 0xFF:
+                break
+            size = int.from_bytes(fhdr[20:23], "little")
+            if size == 0 or size > fv_len - off:
+                break
+            if fhdr[:16] == apriori_guid:
+                apriori_off = pei_start + off
+                break
+            off += (size + 7) & ~7
+
+        self.assertIsNotNone(apriori_off, "Apriori.ffs not found in PEI volume (0x00C00000..0x01000000)")
+
+        # Verify FFS Header checksums
+        fhdr = self.rom[apriori_off:apriori_off + 24]
+        hdr_sum = (sum(fhdr[:16]) + fhdr[16] + sum(fhdr[18:23])) & 0xFF
+        self.assertEqual(hdr_sum, 0, f"Apriori FFS header checksum sum is 0x{hdr_sum:02X}, expected 0")
+        file_chk = fhdr[17]
+        self.assertEqual(file_chk, 0xAA, f"Apriori FFS file checksum is 0x{file_chk:02X}, expected 0xAA")
+
+        fsize = int.from_bytes(fhdr[20:23], "little")
+        self.assertEqual(fsize, 236, f"Expected Apriori size 236 bytes, got {fsize}")
+
+        # Verify RAW section (type 0x19, size 212 bytes = 0xD4)
+        sec_hdr = self.rom[apriori_off + 24:apriori_off + 28]
+        sec_size = int.from_bytes(sec_hdr[0:3], "little")
+        sec_type = sec_hdr[3]
+        self.assertEqual(sec_type, 0x19, f"Expected RAW section type 0x19, got 0x{sec_type:02X}")
+        self.assertEqual(sec_size, 212, f"Expected RAW section size 212 bytes, got {sec_size}")
+
+        # Parse the 13 GUIDs
+        guids_raw = self.rom[apriori_off + 28:apriori_off + 24 + sec_size]
+        self.assertEqual(len(guids_raw), 208, f"Expected 208 bytes of GUID entries (13 GUIDs), got {len(guids_raw)}")
+
+        # Verify [00]: StatusCodePei (E9DD7F62-25EC-4F9D-A4AB-AAD20BF59A10)
+        status_code_guid = bytes.fromhex("627fdde9ec259d4fa4abaad20bf59a10")
+        self.assertEqual(guids_raw[0:16], status_code_guid, "Apriori [00] is not StatusCodePei")
+
+        # Verify [01]: NCT5532DPeiInit (9029F23E-E1EE-40D1-9382-36DD61A63EAA) - Restored early priority
+        nct5532d_guid = bytes.fromhex("3ef22990eee1d140938236dd61a63eaa")
+        self.assertEqual(guids_raw[16:32], nct5532d_guid,
+                         f"Apriori [01] is not NCT5532DPeiInit! Got {guids_raw[16:32].hex()}")
+
+        # Verify [06]: SBPEI (C1FBD624-27EA-40D1-AA48-94C3DC5C7E0D) - Restored
+        sbpei_guid = bytes.fromhex("24d6fbc1ea27d140aa4894c3dc5c7e0d")
+        self.assertEqual(guids_raw[6*16:7*16], sbpei_guid, "Apriori [06] is not SBPEI")
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

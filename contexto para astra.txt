@@ -1,0 +1,200 @@
+Dossier Técnico de Auditoría de Firmware: Qiyida X99-D4 (Intel C612 / LGA2011-3)
+
+Objetivo de la consulta a ChatGPT Astra: Revisar, auditar y contrastar críticamente las decisiones de ingeniería inversa, el mapa de memoria del Flash Descriptor, la reubicación de punteros en modo XIP (PEI), el tratamiento del Intel Management Engine / Server Platform Services en PCH C612, los vectores de reset multiprocesador y el protocolo de flasheo físico para la placa base Qiyida X99-D4 v2.0.
+
+1. Especificaciones de la Plataforma de Hardware
+Parámetro	Especificación de Silicio
+Placa Base	Qiyida X99-D4 v2.0 (OEM Jginyue / Machinist, conector TPM 2.0 de 10 pines).
+Socket	LGA2011-3 (Intel Socket R3).
+Chipset (PCH)	Intel C612 Wellsburg-G Server (Device ID: 0x8D4A).
+Super I/O	Nuvoton NCT5532D (LQFP-64, Chip ID 0xC560, mapeado por la familia en CPU-Z/HWMonitor/Linux nct6775 como NCT6779).
+Controlador de Red	Realtek RTL8111H PCIe Gigabit Ethernet.
+Memoria Flash SPI	16 MB / 128 Mb (Winbond W25Q128 / Macronix MX25L128).
+CPUs soportadas	Intel Xeon E5-1600/2600 v3 (Haswell-EP), Xeon E5-1600/2600 v4 (Broadwell-EP), Core i7 5800/5900/6800/6900.
+Subsistema RAM	Cuádruple canal DDR4: soporte simultáneo de UDIMM (sin búfer) y RDIMM (ECC Registrada de servidor).
+2. Inventario de Binarios y Digests Criptográficos
+Archivo	Tamaño	SHA-256	Descripción y Estado
+qiyidax99d4interfazgraficamodbeta.rom	16,777,216 bytes	a9e80340da0f68bb8548216cfb8aec76fd5b9d8a1d8b0bd6787533f201a36437	Firmware reparado con GUI UEFI de Gigabyte: 16 MB totales (2 MB ME + 14 MB BIOS). Requiere obligatoriamente programador físico externo (CH341A).
+qiyidax99d4BiosUpdate.rom	16,777,216 bytes	0bca95f4869ecdbbeac3d4d528b34063697dea17473a2a0adf2162ed77284b45	Firmware de producción oficial: Mantiene el layout de fábrica (8 MB SPS 3.1 + 8 MB BIOS) con microcódigos 2024. Flasheable por software desde Windows con fptw64 -bios.
+qiyidax99d4ORIGINAL.rom	16,777,216 bytes	0220fc2e42061ebde1634f231a52951631fc64e015770ba5fdd140e00b5e32d1	Volcado de fábrica íntegro sin alterar (Golden Reference).
+3. Cronología Forense de Fallos Identificados y Reparados
+
+La ROM modificada original (donada de Gigabyte GA-X99-Ultra Gaming F7c, X99UG.F7c) provocaba que la placa quedara en estado inerte ("Doesn't boot at all"). La investigación forense determinó que la falla no era un único error, sino una cadena de incompatibilidades en cascada:
+
+Fallo 1: Destrucción del Vector de Reset de Núcleos Secundarios (AP) en 0x00FFD000
+Mecánica del fallo: Al reconstruir volúmenes con herramientas gráficas (UEFITool), el bloque de relleno en 0x00FFD000 fue sobrescrito con bytes planos 0xFF.
+Impacto en silicio: Cuando el núcleo principal (BSP) emite la interrupción de arranque SIPI (vector 0xFD), los núcleos secundarios (APs) comienzan a ejecutar en la dirección física de modo real 0x000FD000 (mapeada a flash 0x00FFD000). Al encontrar 0xFF 0xFF, la CPU genera una excepción #UD (Opcode Inválido) sin tabla IDT activa, culminando en un Triple Fault instantáneo.
+Corrección: Se restauró la instrucción en modo real de 16 bits:
+assembly
+EA D0 FF 00 F0 00 00 00 00 00 00 00 00 00 27 2D  ; ljmp 0xF000:0xFFD0
+En el destino 0x00FFFFD0, la CPU carga la firma mov di, 0x4150 ('AP') y bifurca a 0xFFF2, convergiendo de forma determinista con el SEC Core.
+Fallo 2: Incompatibilidad de Super I/O en Fase Temprana PEI
+Mecánica del fallo: El firmware donante de Gigabyte contenía el módulo IT8728FPeiInit, el cual transmitía secuencias de desbloqueo ITE (87 01 55 55) sobre el bus LPC. La placa Qiyida monta un chip Nuvoton NCT5532D, por lo que el bus LPC permanecía bloqueado, impidiendo el funcionamiento del teclado, reloj de hardware y monitor de encendido.
+Corrección: Se extirpó IT8728FPeiInit y se trasplantó el driver nativo de Qiyida NCT5532DPeiInit (9029F23E-E1EE-40D1-9382-36DD61A63EAA) en el offset 0x00C0D904.
+Fallo 3: Crash por Punteros no Reubicados en NCT5532DPeiInit (Ejecución XIP)
+Mecánica del fallo: En la ROM original de fábrica, NCT5532DPeiInit residía en ImageBase = 0xFFDE59FC. Al trasplantarlo en bruto a la dirección física 0xFFC0D904, los punteros absolutos de memoria dentro de la sección .text quedaron apuntando a la dirección antigua. En modo XIP (eXecute In Place, antes de que la RAM esté inicializada), el código ejecutaba:
+assembly
+mov esi, 0xFFDE5BFE    ; Intentaba cargar tabla LPC antigua
+mov ecx, 0xFFDE5C17    ; Intentaba cargar tabla de desbloqueo Nuvoton antigua
+movzx edx, word ptr [ecx-3]
+out dx, al             ; Escribía en el puerto cargado
+En la nueva ROM, la dirección 0xFFDE5BFE contenía relleno plano 0xFF. Por tanto, edx cargaba el puerto inválido 0xFFFF, disparando escrituras espurias y provocando un cuelgue fatal antes de completar PEI.
+Corrección: Se calculó el delta de reubicación matemática (-0x1D80F8) y se parcharon los punteros:
+RVA 0x311 (offset ROM 0x00C0DC15): corregido de FE 5B DE FF a 06 DB C0 FF (0xFFC0DB06).
+RVA 0x332 (offset ROM 0x00C0DC36): corregido de 17 5C DE FF a 1F DB C0 FF (0xFFC0DB1F).
+OptionalHeader.ImageBase se actualizó a 0xFFC0D904.
+Se recalcularon los checksums del encabezado PE32, cabecera FFS y Firmware Volume Header.
+Fallo 4: Solapamiento Ilegal de Regiones en el Intel Flash Descriptor (FRBA)
+Mecánica del fallo: En el Flash Descriptor (offset 0x0044), la Región 1 (BIOS) estaba configurada erróneamente como 00 00 ff 0f (Base 0x00000000, Límite 0x00FFFFFF). Al abarcar todo el chip desde el byte 0, la Región BIOS invadía la Región 0 (Descriptor), Región 3 (GbE) y Región 2 (ME).
+Impacto en silicio: El árbitro SPI del PCH Intel C612 entra en estado de hardware Flash Configuration Error y congela de inmediato el bus SPI.
+Corrección: Offset 0x0044 corregido a 00 02 ff 0f (Base = 0x00200000, Límite = 0x00FFFFFF). La región BIOS abarca 14 MB exactos (0x00200000..0x00FFFFFF), sin ningún solapamiento.
+Fallo 5: Desfase de Registros en Soft Straps y Neutralización del Intel ME Watchdog
+Mecánica del fallo: La placa Qiyida monta un chipset de servidor Intel C612 (Wellsburg-G), diseñado para Intel SPS 3.1 (Server Platform Services). Al ejecutar el firmware UEFI de Gigabyte con Intel ME 9.1 de consumo, el coprocesador ME falla la sincronización BIST contra los eFuses del silicio de servidor, reteniendo la señal de reset de la plataforma (PLTRST#) o forzando un apagado por watchdog a los 30 minutos de funcionamiento.
+Corrección de offsets en el Flash Descriptor:
+Conforme a la arquitectura Intel SPI, FLMAP1 (0x0018 = 0x15100306) define:
+FMBA (Flash Master Base Address) = (0x06 << 4) = 0x0060.
+FPSBA (Flash PCH Strap Base Address) = (0x10 << 4) = 0x0100.
+Cada soft strap ocupa 4 bytes (DWORD). El registro PCHSTRP10 reside estrictamente en:
+FPSBA
++
+(
+10
+×
+4
+)
+=
+0
+𝑥
+0100
++
+0
+𝑥
+28
+=
+0
+𝑥
+0128
+FPSBA+(10×4)=0x0100+0x28=0x0128
+En offset 0x0128 se estableció el valor 0x00800000 (00 00 80 00 en little-endian), fijando el bit 23 (AltMeDisable = 1), ordenando al motor ME detenerse limpiamente tras la generación de relojes base del PCH.
+Se clarificó que la tabla física de capacidades VSCC reside en offset 0x0200 (FLMAP2 bits [7:0] << 4 = 0x0200), descartando falsos positivos previos.
+Fallo 6: Extirpación de 24 Módulos Parásitos de Gigabyte
+
+Para evitar bloqueos durante el POST causados por sondeos de hardware no presente en la placa Qiyida, se eliminaron y sustituyeron por bloques de relleno UEFI PAD limpios los siguientes 24 módulos:
+
+Gigabyte DualBIOS (6 módulos): DualBiosCSPPei, DualBiosPlusPei, DualBiosDxe, DualBiosPlusDxe, DualBiosSmm, DualBiosPlusSmm (previene bucles de reinicio al buscar un segundo chip SPI físico inexistente).
+Intel Thunderbolt Alpine Ridge (4 módulos): TbtPei, TbtXhciOnlyPei, TbtDxe, TbtSmm.
+Controlador Secundario ITE EC 8790 (3 módulos): Ite8790ECPei, Ite8790ECDxe, Ite8790ECSmi.
+Controladores de LED e Iluminación ITE (4 módulos): ITEPowerLEDPei, ITEPowerLEDDxe, EcLedIndicatorPei, EcLedIndicatorSmm.
+Gigabyte CellPhone OC (2 módulos): GBTCellPhoneOCDxe, GBTCellPhoneOCSmm.
+Red Killer LAN (2 módulos): LxUndiBinE2400, LxUndiBinE2500.
+SMM Features de ITE 8728 (3 módulos): IT8728FSmmFeaturesPei, IT8728FSmmFeaturesDxe, IT8728FSmmFeaturesSmm.
+Fallo 7: El Desastre del Flasheo por Software con Intel FPT (fptw64)
+Causa del brick reportado por usuarios: La BIOS original de fábrica posee un descriptor particionado en hardware como 8 MB ME + 8 MB BIOS. El mod gráfico exige 2 MB ME + 14 MB BIOS.
+Al intentar flashear por software desde Windows:
+Si el usuario ejecuta fptw64 -bios -f ..., la herramienta graba únicamente los 8 MB superiores (0x00800000..0x00FFFFFF). Los primeros 6 MB de código BIOS (0x00200000..0x007FFFFF, que contienen la NVRAM, el DXE Core y la mitad de los drivers de inicialización) nunca se escriben.
+Si el usuario ejecuta fptw64 -f ..., el hardware activo del PCH C612 utiliza los límites de registros activos y escribe 6 MB del núcleo de la BIOS dentro de la partición ME del chip SPI, corrompiendo la flash irreversiblemente por software.
+Regla mandataria: La imagen qiyidax99d4interfazgraficamodbeta.rom sólo puede grabarse con programador físico SPI externo (CH341A con pinza SOIC-8). Para flasheo por software seguro desde Windows se debe utilizar exclusivamente qiyidax99d4BiosUpdate.rom.
+4. Evidencias de Desensamblado e Ingeniería Inversa (Ghidra 12.1.2 / REA)
+A. Trazado del Reset Vector SEC Core (0x00FFFFF0)
+
+Al recibir señal de encendido, el procesador (BSP) inicia en Modo Real x86 en la dirección física 0xFFFFFFF0:
+
+assembly
+0xFFF0: 90               nop
+0xFFF1: 90               nop
+0xFFF2: E9 83 E8         jmp 0xE878     ; Salto relativo al SEC Core en 0xFFFFE878
+
+Secuencia ejecutada en 0xFFFFE878:
+
+fninit y movd mm0, eax (salva el resultado BIST en MM0).
+lgdt cs:[0xffffe960] (carga la GDT temporal).
+mov cr0, eax con bits PE y MP en 1 (transición a Modo Protegido de 32 bits).
+ljmp 0x10:0xffffe8d8 (salto lejano al selector de código plano de 32 bits).
+0xFFFFEF45: ejecuta cpuid y compara "GenuineIntel". Valida la CPU y programa los MTRRs en modo Cache-As-RAM (CAR / NEM).
+0xFFFFFBC4: ejecuta llamada directa al Entry Point de PeiCore:
+assembly
+0xFFFFFBB8: mov eax, 0x18709c
+0xFFFFFBBD: call 0xfffffc6d    ; Resuelve puntero a PeiCore Entry VA (0xFFC01F54)
+0xFFFFFBC2: push esi           ; Parámetro 2: SecCoreData
+0xFFFFFBC3: push ecx           ; Parámetro 1: PpiList
+0xFFFFFBC4: call eax           ; SALTO A PEICORE (0xFFC01F54)
+B. Desensamblado de NCT5532DPeiInit en REA / Ghidra (0xFFC0DC10)
+Evidence ID REA: ev_62f03c76c221cf524a15980797f8c0605c8a0c5e7c189a30154087ab66417698
+assembly
+0xFFC0DC10: PUSH ESI
+0xFFC0DC11: PUSH EDI
+0xFFC0DC12: PUSH 0x3
+0xFFC0DC14: MOV  ESI, 0xFFC0DB06   ; Puntero 1 reubicado a la tabla de decodificación LPC
+0xFFC0DC19: POP  EDI
+0xFFC0DC1A: MOVZX EAX, byte ptr [ESI]
+0xFFC0DC1D: PUSH EAX
+0xFFC0DC1E: MOVZX EAX, word ptr [ESI - 0x2]
+0xFFC0DC22: PUSH EAX
+0xFFC0DC23: MOV  EAX, dword ptr [ESI + 0x2]
+0xFFC0DC26: CALL 0xFFC0DD45       ; Programa decodificadores LPC en PCH C612 (puertos 0x2E, 0x60, 0x0A00)
+0xFFC0DC2B: POP  ECX
+0xFFC0DC2C: ADD  ESI, 0x8
+0xFFC0DC2F: DEC  EDI
+0xFFC0DC30: POP  ECX
+0xFFC0DC31: JNZ  0xFFC0DC1A        ; Itera sobre los 3 rangos de hardware
+0xFFC0DC33: PUSH 0x3D             ; Prepara contador de 61 registros Super I/O
+0xFFC0DC35: MOV  ECX, 0xFFC0DB1F   ; Puntero 2 reubicado a la tabla de configuración Nuvoton
+...
+0xFFC0DC57: OUT  DX, AL            ; Emite configuración al chip Super I/O
+0xFFC0DC58: ADD  ECX, 0x4
+0xFFC0DC5B: DEC  ESI
+0xFFC0DC5C: JNZ  0xFFC0DC3B        ; Itera los 61 pasos de configuración
+0xFFC0DC5E: POP  EDI
+0xFFC0DC5F: XOR  EAX, EAX          ; Retorna 0x00000000 (EFI_SUCCESS)
+0xFFC0DC61: POP  ESI
+0xFFC0DC62: RET
+Inspección de bytes con REA:
+Tabla LPC en 0xFFC0DB04:
+Entrada 1: Puerto 0x002E, 2 bytes (puertos 0x2E/0x2F Super I/O index/data).
+Entrada 2: Puerto 0x0060, KBC teclado/ratón PS/2 (0x60/0x64).
+Entrada 3: Puerto 0x0A00, longitud 0x40 bytes (0x0A00..0x0A3F Hardware Monitor).
+Tabla Nuvoton en 0xFFC0DB1C:
+Inicio: 2E 00 00 87, 2E 00 00 87 (secuencia de desbloqueo oficial Nuvoton).
+Cierre: 2E 00 00 AA (bloqueo del modo de configuración).
+5. Batería de Pruebas Automatizadas (22/22 Tests en Verde)
+
+Se diseñó e implementó test_suite.py que verifica de forma determinista el binario qiyidax99d4interfazgraficamodbeta.rom:
+
+test_01_exact_file_size: Tamaño exacto de 16,777,216 bytes.
+test_02_flash_descriptor_signature: Firma SPI 0x0FF0A55A en offset 0x10.
+test_03_frba_boundaries_and_no_overlap: Región 1 en 0x00200000..0x00FFFFFF sin colisiones.
+test_04_vscc_table_restoration: Offset 0x0128 en 0x00800000.
+test_05_pchstrp10_altmedisable: Bit 23 (AltMeDisable) activo en PCHSTRP10.
+test_06_nct5532d_pei_relocation_and_pointers: Punteros en 0xFFC0DB06 y 0xFFC0DB1F.
+test_07_nct5532d_pei_instruction_disassembly: Instrucciones de acceso a puertos de I/O legítimas.
+test_08_nct5532d_target_data_tables_validity: Tablas de datos sin bytes planos 0xFF.
+test_09_pointers_within_pe_bounds: Punteros estrictamente dentro de [ImageBase, ImageBase + SizeOfImage).
+test_10_eradication_of_broken_pointers: Cero ocurrencias de 0xFFDE5BFE y 0xFFDE5C17.
+test_11_optional_header_image_base: ImageBase configurado en 0xFFC0D904.
+test_12_checksums_pe_ffs_fv: Checksums PE32, FFS y Firmware Volume equilibrados a cero.
+test_13_ap_reset_vector: Salto en modo real EA D0 FF 00 F0 en 0x00FFD000.
+test_14_sec_reset_vector: Vector SEC 90 90 E9 en 0x00FFFFF0.
+test_15_microcodes_and_fit_table: Tabla FIT en 0x00BF0000 con 4 microcódigos oficiales Intel intactos.
+test_16_companion_roms_unmodified: Integridad de ORIGINAL.rom y BiosUpdate.rom.
+test_17_repaired_rom_sha256: Hash SHA-256 coincide exactamente con a9e80340da0f68bb8548216cfb8aec76fd5b9d8a1d8b0bd6787533f201a36437.
+test_18_all_firmware_volumes_header_checksums: Suma cero en volúmenes 0x00200000, 0x00280000 y 0x00C00000.
+test_19_all_pei_modules_relocation_and_bounds: 58 módulos PE auditados en el volumen de 4 MB.
+test_20_sec_core_pei_entry_handoff: Offset 0x00FFFFE0 apunta a 0xFFC01F54 (PeiCore).
+test_21_flmstr1_host_flash_master_permissions: Offset 0x0060 contiene 0xFFFF0000 (permisos de lectura/escritura totales para CPU).
+test_22_fit_microcode_entries_match_headers: Entradas FIT enlazadas a parches Intel Haswell rev 49 y Broadwell rev 41.
+6. Microcódigos CPU Oficiales Integrados
+CPUID 306F2 (Haswell-EP / Xeon E5 v3): Revisión 49 (2021). Mitiga vulnerabilidades de canal lateral (Downfall/GDS, CrossTalk/SRBDS, MDS, MMIO Stale Data).
+CPUID 406F1 (Broadwell-EP / Xeon E5 v4): Revisión 41 (2024). Mitiga Register File Data Sampling (RFDS 2024), Downfall y MDS.
+CPUID 306F1 y 406F0: Revisiones oficiales para muestras de ingeniería (ES).
+
+(Nota sobre el Turbo Boost Unlock de Xeon v3: los microcódigos oficiales incluidos priorizan estabilidad y seguridad del silicio conforme a especificaciones Intel. El hack de desbloqueo de Turbo para todos los núcleos de Xeon v3 requeriría la remoción del microcódigo 306F2 e inyección de un driver DXE como V3Turbo).
+
+Instrucción de Solicitud para ChatGPT Astra 6.2
+
+"Actúa como un arquitecto principal de firmware UEFI y especialista en seguridad de hardware e ingeniería inversa de bajo nivel en plataformas Intel C610 / Wellsburg y Xeon E5 v3/v4. Revisa minuciosamente el dossier técnico expuesto arriba. Audita y valida:
+
+Si el particionado FRBA del Flash Descriptor (0x00200000..0x00FFFFFF) para la región BIOS de 14 MB es matemáticamente coherente y elimina el conflicto en el árbitro SPI del PCH C612.
+Si el cálculo de offsets para FLMAP1, FMBA (0x0060), FPSBA (0x0100) y PCHSTRP10 (0x0128 con bit 23 en 1 para AltMeDisable) se ajusta con rigor a las especificaciones de Intel Wellsburg/Patsburg.
+Si la reubicación de punteros en modo XIP para NCT5532DPeiInit en fase temprana PEI (ImageBase = 0xFFC0D904, punteros 0xFFC0DB06 y 0xFFC0DB1F) es matemáticamente sólida y previene el Triple Fault sin RAM inicializada.
+Si la conclusión de que este firmware de 14 MB de BIOS NO puede ser flasheado con fptw64 sobre el descriptor de fábrica de 8 MB/8 MB (requiriendo programador físico CH341A) es correcta y técnicamente irrefutable.
+Indica si observas cualquier posible cuello de botella, limitación de hardware o aspecto adicional que deba ser considerado durante la prueba en placa física."

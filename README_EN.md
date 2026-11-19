@@ -29,7 +29,7 @@ Official and modified firmware repository for the Qiyida X99-D4 motherboard (Rev
 
 | File | Size | SHA-256 | Description | Flashing Method |
 | :--- | :--- | :--- | :--- | :--- |
-| `qiyidax99d4interfazgraficamodbeta.rom` | 16,777,216 bytes | `a9e80340da0f68bb8548216cfb8aec76fd5b9d8a1d8b0bd6787533f201a36437` | Complete 16 MB firmware with repaired Gigabyte graphical UEFI, corrected FRBA boundaries, restored VSCC table, AltMeDisable mitigation, NCT5532D PEI relocation, and 2024 microcodes. | **Exclusively via external physical programmer (CH341A)** |
+| `qiyidax99d4interfazgraficamodbeta.rom` | 16,777,216 bytes | `074ce365c21b7c44fe175e50a6b956756160e7fd8ee5034097ae2e114fd5c0f9` | Complete 16 MB firmware with repaired Gigabyte graphical UEFI, corrected FRBA boundaries, Upper Map VSCC table, PCHSTRP10 AltMeDisable, NCT5532D PEI relocation, restored Apriori PEI early execution priority, and 2024 microcodes. | **Exclusively via external physical programmer (CH341A)** |
 | `qiyidax99d4BiosUpdate.rom` | 16,777,216 bytes | `0bca95f4869ecdbbeac3d4d528b34063697dea17473a2a0adf2162ed77284b45` | Production-grade firmware based on factory 8 MB BIOS layout with official 2024 microcodes (Haswell rev 49, Broadwell rev 41). Flashed via software in Windows. | Software (`fptw64 -bios`) or CH341A programmer |
 | `qiyidax99d4ORIGINAL.rom` | 16,777,216 bytes | `0220fc2e42061ebde1634f231a52951631fc64e015770ba5fdd140e00b5e32d1` | Untouched factory flash dump (Intel SPS 3.1.3.72, 8 MB BIOS region). Golden reference backup. | External physical programmer (CH341A) |
 
@@ -44,10 +44,10 @@ In `qiyidax99d4interfazgraficamodbeta.rom`, critical low-level silicon defects w
 - **Fix applied:** Configured Region 1 Base to `0x00200000` (offset `0x0044`: `00 02 ff 0f`). Region 1 is properly delimited at `0x00200000..0x00FFFFFF` (14 MB), resolving the overlap and complying with Intel PCH hardware arbitration requirements.
 
 ### 3.2 Restoration of VSCC Table and PCHSTRP10 Register (AltMeDisable)
-- **Failure mechanics:** In the Flash Descriptor definitions, offset `0x0128` maps to the VSCC (*Vendor Specific Component Capabilities*) table entry, not the soft strap table. An erroneous patch modified `00 00 80 00` (`0x00800000`) to `80 00 80 00` (`0x00800080`), corrupting the SPI chip timing and command parameters. Simultaneously, the genuine `PCHSTRP10` register is located at offset `0x0088` (`0x0060 + 10*4`), where it remained untouched, preventing the Intel ME engine from receiving the halt command.
+- **Failure mechanics:** In the Intel Flash Descriptor definitions, SPI chip capabilities are defined in the Upper Map `FLUMAP1` (offset `0x0EFC`), where `VTBA = (FLUMAP1 & 0xFF) << 4` (`0x0DF0`) addresses a 184-byte VSCC (*Vendor Specific Component Capabilities*) table. Separately, soft strap register `PCHSTRP10` is determined by `FPSBA = ((FLMAP1 >> 16) & 0xFF) << 4` (`0x0100`), residing at `FPSBA + 10*4 = 0x0128`. In this register, bit 23 (`AltMeDisable`) controls graceful termination of the Intel ME engine.
 - **Fix applied:**
-  - Restored offset `0x0128` to its correct value: `00 00 80 00` (`0x00800000`).
-  - Applied and verified bit 7 (`AltMeDisable = 1`) in `PCHSTRP10` (offset `0x0088`), instructing the ME engine to halt cleanly following fundamental PCH clock generation without triggering the watchdog timeout.
+  - Validated and preserved the 184-byte VSCC table at `0x0DF0`, bit-for-bit identical to `ORIGINAL.rom`.
+  - Applied and verified bit 23 (`AltMeDisable = 1`, value `0x00800000`) in `PCHSTRP10` (offset `0x0128`), instructing the ME engine to halt cleanly following fundamental PCH clock generation without triggering the 30-minute watchdog timeout.
 
 ### 3.3 Pointer Relocation in PEIM Driver NCT5532DPeiInit
 - **Failure mechanics:** The PEIM module `NCT5532DPeiInit` (`9029F23E-E1EE-40D1-9382-36DD61A63EAA`) was transplanted from `ORIGINAL.rom` (where it resided at `ImageBase = 0xFFDE59FC`) into `0xFFC0D904` without adjusting its absolute hardcoded pointers. During early PEI execution (Execute-In-Place XIP in flash memory prior to DRAM initialization), the module executed:
@@ -94,6 +94,16 @@ Updated in the Firmware Interface Table (FIT, offset `0x00BF0000`):
 | `406F0` | Broadwell-EP (Engineering Sample ES) | `00000014` | 2015-07-02 | ES CPU compatibility |
 | `306F2` | **Haswell-EP Commercial (Xeon E5 v3)** | **`49`** | 2021-08-11 | Downfall (GDS), CrossTalk / SRBDS, MDS, MMIO Stale Data |
 | `406F1` | **Broadwell-EP Commercial (Xeon E5 v4)** | **`41`** | 2024-02-16 | Register File Data Sampling (RFDS 2024), Downfall (GDS), MDS |
+
+### 3.8 Early Execution Priority Restoration in Apriori PEI (Apriori.ffs)
+- **Failure mechanics:** The early dispatch schedule file `Apriori.ffs` (`1B45CC0A-156A-428A-AF62-49864DA0E6E6`) at `0x00C00078` contained only 11 GUIDs (204 bytes), omitting the platform's vital early drivers `NCT5532DPeiInit` (priority index [01]) and `SBPEI` (index [06]). Without Apriori priority, the PEI dispatcher could not guarantee that the Nuvoton Super I/O was initialized prior to executing subsequent PEIMs dependent on the LPC bus. Furthermore, the file could not be expanded in-situ at `0x00C00078` (which terminated at `0x00C00144` followed by only 4 bytes of `0xFFFFFFFF` padding before `WdtPei` at `0x00C00148`), because any size expansion would displace `WdtPei` and all subsequent PE executables, breaking their absolute memory pointers computed for Execute-In-Place (XIP) mode.
+- **Fix applied:**
+  - **Action A:** Converted the 204-byte block at `0x00C00078` into a compliant `EFI_FV_FILETYPE_PAD` (`0xF0`) file with valid FFS header checksum (`0x54`), keeping `WdtPei` precisely at physical address `0x00C00148` and avoiding any displacement of XIP code.
+  - **Action B:** Utilized the formal 1,928-byte PAD block at `0x00C0E198` (immediately following `NCT5532DPeiInit`) to host the new `Apriori.ffs`:
+    1. Injected at `0x00C0E198` the 236-byte (`0xEC`) `Apriori.ffs` file containing all 13 factory GUIDs in official order, placing `NCT5532DPeiInit` at priority index [01] and `SBPEI` at index [06], with valid FFS header and RAW section.
+    2. Strictly preserved the UEFI PI Specification 8-byte alignment rule (4 bytes of `0xFFFFFFFF` padding at `0x00C0E284..0x00C0E288`).
+    3. Programmed starting at `0x00C0E288` the remanent PAD file of 1,688 bytes (`0x698`), terminating cleanly at `0x00C0E920` with a valid PAD header (checksum `0x82`).
+  - **Action C:** Verified Firmware Volume container header integrity at `0x00C00000`, confirming that the 16-bit header checksum sum is exactly 0.
 
 ---
 
@@ -165,9 +175,10 @@ To update official 2024 microcodes without external hardware, retaining the fact
 
 The repository includes a comprehensive byte-level automated test suite (`test_suite.py`) validating:
 - Exact file size (16,777,216 bytes).
+- Intel Flash Descriptor signature (`0x0FF0A55A`) at offset `0x10`.
 - FRBA boundaries, 4KB page alignment, and mathematical non-overlap across SPI regions.
-- Restoration of the VSCC table entry at offset `0x0128` to `0x00800000`.
-- Soft strap register `PCHSTRP10` at offset `0x0088` with bit 7 set to 1 (`AltMeDisable`).
+- Upper Map VSCC table (`FLUMAP1` at `0x0EFC` -> `VTBA 0x0DF0`) with 184 bytes matching `ORIGINAL.rom`.
+- Soft strap register `PCHSTRP10` at `0x0128` (`FPSBA 0x0100 + 10*4`) with bit 23 active (`AltMeDisable = 1`).
 - Disassembly of `NCT5532DPeiInit` instructions and validity of LPC / Super I/O configuration tables.
 - Verification that relocated pointers strictly inhabit PE bounds [ImageBase, ImageBase + SizeOfImage).
 - Total eradication of obsolete pointers `0xFFDE5BFE` and `0xFFDE5C17`.
@@ -176,6 +187,13 @@ The repository includes a comprehensive byte-level automated test suite (`test_s
 - SEC Core entry vector at `0x00FFFFF0`.
 - Intel microcode storage blocks and FIT table integrity.
 - Unmodified integrity of companion ROM files (`ORIGINAL.rom` and `BiosUpdate.rom`).
+- Cryptographic SHA-256 digests across all firmware images.
+- Header signatures, lengths, and checksums across all Firmware Volumes (`0x00200000`, `0x00280000`, `0x00C00000`).
+- Relocation and boundary audit of all PE modules in the PEI volume (zero stale `0xFFDE` pointers).
+- SEC Core handoff to PeiCore entry point (`0xFFC01F54`).
+- Unlocked host permissions in `FLMSTR1` (`0xFFFF0000`).
+- FIT microcode pointers matching Intel headers.
+- Early dispatch schedule in Apriori PEI (`Apriori.ffs`) with `NCT5532DPeiInit` at index [01] and `SBPEI` at [06].
 
 To execute the test suite:
 ```bash

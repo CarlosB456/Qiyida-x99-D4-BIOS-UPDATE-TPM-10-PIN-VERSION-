@@ -29,7 +29,7 @@ Repositorio de firmware oficial y modificado para la placa base Qiyida X99-D4 (R
 
 | Archivo | Tamano | SHA-256 | Descripcion | Metodo de Flasheo |
 | :--- | :--- | :--- | :--- | :--- |
-| `qiyidax99d4interfazgraficamodbeta.rom` | 16,777,216 bytes | `a9e80340da0f68bb8548216cfb8aec76fd5b9d8a1d8b0bd6787533f201a36437` | Firmware completo de 16 MB con interfaz grafica UEFI Gigabyte reparada, limites FRBA corregidos, tabla VSCC restaurada, mitigacion AltMeDisable, reubicacion PEI NCT5532D y microcodigos 2024. | **Exclusivamente programador fisico externo (CH341A)** |
+| `qiyidax99d4interfazgraficamodbeta.rom` | 16,777,216 bytes | `074ce365c21b7c44fe175e50a6b956756160e7fd8ee5034097ae2e114fd5c0f9` | Firmware completo de 16 MB con interfaz grafica UEFI Gigabyte reparada, limites FRBA corregidos, tabla VSCC en Upper Map, PCHSTRP10 AltMeDisable, reubicacion PEI NCT5532D, orden prioritario en Apriori PEI restaurado y microcodigos 2024. | **Exclusivamente programador fisico externo (CH341A)** |
 | `qiyidax99d4BiosUpdate.rom` | 16,777,216 bytes | `0bca95f4869ecdbbeac3d4d528b34063697dea17473a2a0adf2162ed77284b45` | Firmware de produccion basado en la BIOS original de 8 MB con microcodigos 2024 (Haswell rev 49, Broadwell rev 41). Flasheable por software en Windows. | Software (`fptw64 -bios`) o programador CH341A |
 | `qiyidax99d4ORIGINAL.rom` | 16,777,216 bytes | `0220fc2e42061ebde1634f231a52951631fc64e015770ba5fdd140e00b5e32d1` | Volcado de fabrica integro (Intel SPS 3.1.3.72, BIOS 8 MB). Respaldo de referencia. | Programador fisico externo (CH341A) |
 
@@ -44,10 +44,10 @@ En `qiyidax99d4interfazgraficamodbeta.rom` se diagnosticaron y corrigieron anoma
 - **Correccion aplicada:** Se configuro la Base en `0x00200000` (offset `0x0044`: `00 02 ff 0f`). La Region 1 queda acotada en `0x00200000..0x00FFFFFF` (14 MB), eliminando el solapamiento con las regiones inferiores y respetando el arbitraje de hardware del PCH.
 
 ### 3.2 Restauracion de Tabla VSCC y Registro PCHSTRP10 (AltMeDisable)
-- **Mecanica del fallo:** En la definicion de chipsets del Flash Descriptor, el offset `0x0128` corresponde a una entrada de la tabla VSCC (*Vendor Specific Component Capabilities*), no al registro de soft straps. Una modificacion errónea altero `00 00 80 00` (`0x00800000`) a `80 00 80 00` (`0x00800080`), corrompiendo los parametros de temporizacion y comandos del chip SPI flash. Al mismo tiempo, el verdadero registro de straps `PCHSTRP10` reside en el offset `0x0088` (`0x0060 + 10*4`), donde permanecia inalterado, impidiendo que el motor Intel ME recibiera la señal de desactivacion.
+- **Mecanica del fallo:** En el Intel Flash Descriptor, la definicion de capacidades VSCC (*Vendor Specific Component Capabilities*) reside en el Upper Map `FLUMAP1` (offset `0x0EFC`), donde el puntero `VTBA = (FLUMAP1 & 0xFF) << 4` (`0x0DF0`) direccionaba una tabla VSCC de 184 bytes. Paralelamente, el registro de soft straps `PCHSTRP10` se calcula a partir de `FPSBA = ((FLMAP1 >> 16) & 0xFF) << 4` (`0x0100`), ubicandose en `FPSBA + 10*4 = 0x0128`. En este registro, el bit 23 (`AltMeDisable`) gobierna la desactivacion ordenada del coprocesador Intel ME.
 - **Correccion aplicada:**
-  - Se restauro el offset `0x0128` a su valor integro `00 00 80 00` (`0x00800000`).
-  - Se valido y aplico el bit 7 (`AltMeDisable = 1`) en `PCHSTRP10` (offset `0x0088`), instruyendo al motor ME detenerse ordenadamente tras la generacion de reloj del PCH sin activar el temporizador watchdog.
+  - Se valido y preservo la integridad absoluta de la tabla VSCC de 184 bytes en `0x0DF0`, identica bit a bit a `ORIGINAL.rom`.
+  - Se valido y aplico el bit 23 (`AltMeDisable = 1`, valor `0x00800000`) en el registro `PCHSTRP10` (offset `0x0128`), instruyendo al motor ME detenerse limpiamente tras la generacion de relojes base del PCH sin activar el temporizador watchdog de 30 minutos.
 
 ### 3.3 Reubicacion de Punteros en Modulo PEIM NCT5532DPeiInit
 - **Mecanica del fallo:** El driver PEIM `NCT5532DPeiInit` (`9029F23E-E1EE-40D1-9382-36DD61A63EAA`) fue trasplantado desde `ORIGINAL.rom` (donde residia en `ImageBase = 0xFFDE59FC`) a `0xFFC0D904` sin reubicar sus punteros absolutos. Durante la fase temprana PEI (ejecucion directa XIP en memoria flash antes de inicializar la RAM), el codigo ejecutaba:
@@ -94,6 +94,16 @@ Actualizados en el Firmware Interface Table (FIT, offset `0x00BF0000`):
 | `406F0` | Broadwell-EP (Muestra de Ingenieria ES) | `00000014` | 2015-07-02 | Compatibilidad procesadores ES |
 | `306F2` | **Haswell-EP Comercial (Xeon E5 v3)** | **`49`** | 2021-08-11 | Downfall (GDS), CrossTalk / SRBDS, MDS, MMIO Stale Data |
 | `406F1` | **Broadwell-EP Comercial (Xeon E5 v4)** | **`41`** | 2024-02-16 | Register File Data Sampling (RFDS 2024), Downfall (GDS), MDS |
+
+### 3.8 Restauracion de Prioridad en la Lista Apriori PEI (Apriori.ffs)
+- **Mecanica del fallo:** El archivo de despacho anticipado `Apriori.ffs` (`1B45CC0A-156A-428A-AF62-49864DA0E6E6`) en `0x00C00078` contenia unicamente 11 GUIDs (204 bytes), habiendo omitido los controladores esenciales de la plataforma `NCT5532DPeiInit` (posicion [01]) y `SBPEI` (posicion [06]). Sin la prioridad de ejecucion en Apriori, el dispatcher de PEI no garantizaba la inicializacion temprana del chip Super I/O Nuvoton antes de la ejecucion de modulos dependientes del bus LPC. A su vez, el archivo no podia expandirse in-situ en `0x00C00078` (finalizaba en `0x00C00144` seguido de solo 4 bytes `0xFFFFFFFF` antes de `WdtPei` en `0x00C00148`), ya que cualquier incremento de tamano desplazaria a `WdtPei` y a todos los ejecutables PE subsecuentes, corrompiendo sus punteros absolutos calculados para modo XIP (Execute In Place).
+- **Correccion aplicada:**
+  - **Accion A:** Se convirtio el bloque de 204 bytes en `0x00C00078` en un archivo formal de relleno `EFI_FV_FILETYPE_PAD` (`0xF0`) con cabecera FFS valida (checksum `0x54`), manteniendo a `WdtPei` exactamente en su direccion fisica `0x00C00148` y evitando cualquier desplazamiento de codigo XIP.
+  - **Accion B:** Se utilizo el bloque PAD formal de 1,928 bytes situado en `0x00C0E198` (inmediatamente despues de `NCT5532DPeiInit`) para albergar el nuevo `Apriori.ffs`:
+    1. Se inyecto en `0x00C0E198` el archivo `Apriori.ffs` de 236 bytes (`0xEC`) con los 13 GUIDs completos en el orden de fabrica, situando a `NCT5532DPeiInit` en la posicion prioritaria [01] y a `SBPEI` en la posicion [06], con cabecera y seccion RAW validas.
+    2. Se respeto estrictamente la alineacion de 8 bytes de la especificacion UEFI PI (4 bytes de relleno `0xFFFFFFFF` en `0x00C0E284..0x00C0E288`).
+    3. Se grabo a partir de `0x00C0E288` el archivo PAD remanente de 1,688 bytes (`0x698`), finalizando exactamente en `0x00C0E920` con cabecera PAD valida (checksum `0x82`).
+  - **Accion C:** Se verifico la consistencia del Firmware Volume Header en `0x00C00000`, confirmando que la suma de comprobacion de 16 bits sea exactamente 0.
 
 ---
 
@@ -165,9 +175,10 @@ Para actualizar microcodigos oficiales 2024 sin programador fisico, manteniendo 
 
 El repositorio incluye una suite automatizada de pruebas exhaustivas (`test_suite.py`) que comprueba byte a byte:
 - Tamaño de archivo exacto (16,777,216 bytes).
+- Firma del Intel Flash Descriptor (`0x0FF0A55A`) en offset `0x10`.
 - Limites FRBA y ausencia matematica de solapamiento en el bus SPI.
-- Restauracion de la tabla VSCC en offset `0x0128` a `0x00800000`.
-- Registro `PCHSTRP10` en offset `0x0088` con bit 7 en 1 (`AltMeDisable`).
+- Tabla VSCC en Upper Map (`FLUMAP1` en `0x0EFC` -> `VTBA 0x0DF0`) con 184 bytes identicos a `ORIGINAL.rom`.
+- Registro `PCHSTRP10` en `0x0128` (`FPSBA 0x0100 + 10*4`) con bit 23 activo (`AltMeDisable = 1`).
 - Desensamblado de instrucciones de `NCT5532DPeiInit` y consistencia de tablas de configuracion LPC / Super I/O.
 - Punteros en rango estricto del espacio PE [ImageBase, ImageBase + SizeOfImage).
 - Ausencia total de los punteros obsoletos `0xFFDE5BFE` y `0xFFDE5C17`.
@@ -176,6 +187,13 @@ El repositorio incluye una suite automatizada de pruebas exhaustivas (`test_suit
 - Vector de entrada SEC en `0x00FFFFF0`.
 - Microcodigos Intel y tabla FIT.
 - Respaldo integro de ROMs acompañantes (`ORIGINAL.rom` y `BiosUpdate.rom`).
+- Hash criptografico SHA-256 de las ROMs.
+- Cabeceras y checksums de todos los Firmware Volumes (`0x00200000`, `0x00280000`, `0x00C00000`).
+- Auditoria de reubicacion y alineacion de todos los modulos PE en volumen PEI (sin punteros `0xFFDE`).
+- Handoff del SEC Core al Entry Point de PeiCore (`0xFFC01F54`).
+- Permisos totales del Flash Master host en `FLMSTR1` (`0xFFFF0000`).
+- Apuntadores FIT a microcodigos oficiales de Intel.
+- Lista de despacho prioritaria Apriori PEI (`Apriori.ffs`) con `NCT5532DPeiInit` en posicion [01] y `SBPEI` en [06].
 
 Para ejecutar las pruebas:
 ```bash
